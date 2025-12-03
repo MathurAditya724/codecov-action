@@ -5,7 +5,7 @@ inputs:
   junit-xml-pattern:
     description: Glob pattern for finding JUnit XML files
     required: false
-    default: '**/junit*.xml'
+    default: '**/junit.xml'
   token:
     description: GitHub token for posting PR comments
     required: true

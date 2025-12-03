@@ -32204,7 +32204,6 @@ class FileFinder {
     async findFiles(pattern) {
         try {
             coreExports.info(`Searching for files matching pattern: ${pattern}`);
-            coreExports.info(`DIRECTORY: ${process.cwd()}`);
             const globber = await globExports.create(pattern, {
                 followSymbolicLinks: false,
             });
