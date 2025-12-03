@@ -10,7 +10,7 @@ async function run() {
     core.info("🚀 Starting Codecov Action - Test Results Reporter");
 
     // Get inputs
-    const junitPattern = core.getInput("junit-xml-pattern") || "**/junit*.xml";
+    const junitPattern = core.getInput("junit-xml-pattern") || "**/junit.xml";
     const token = core.getInput("token");
 
     if (!token) {
