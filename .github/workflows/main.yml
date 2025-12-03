@@ -33,7 +33,3 @@ jobs:
         uses: ./ # TODO: later remove this with the public address
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Use the output from the `analysis` step
-      - name: Get the output time
-        run: echo "${{ steps.analysis.outputs }}"
