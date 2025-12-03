@@ -7,7 +7,7 @@ export default defineConfig({
       junit: "report.junit.xml",
     },
     coverage: {
-      include: ["src/__tests__/operations.ts"],
+      include: ["src/__tests__/**/*.ts"],
     },
   },
 });

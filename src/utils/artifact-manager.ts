@@ -57,8 +57,7 @@ export class ArtifactManager {
       const resultsFile = path.join(tmpDir, "test-results.json");
 
       // Write results to file (without the comparison field to avoid circular data)
-      const resultsToSave = { ...results };
-      delete resultsToSave.comparison;
+      const { comparison, ...resultsToSave } = results;
       fs.writeFileSync(resultsFile, JSON.stringify(resultsToSave, null, 2));
 
       // Upload the artifact
@@ -145,7 +144,7 @@ export class ArtifactManager {
 
           // Clean up
           fs.unlinkSync(zipPath);
-          fs.rmdirSync(tmpDir, { recursive: true });
+          fs.rmSync(tmpDir, { recursive: true });
 
           return results;
         }
