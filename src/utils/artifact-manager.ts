@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { DefaultArtifactClient } from "@actions/artifact";
 import * as core from "@actions/core";
 import { getOctokit } from "@actions/github";
-import * as AdmZip from "adm-zip";
+import AdmZip from "adm-zip";
 import type { AggregatedTestResults } from "../types/test-results.js";
 
 /**
@@ -57,7 +57,7 @@ export class ArtifactManager {
       const resultsFile = path.join(tmpDir, "test-results.json");
 
       // Write results to file (without the comparison field to avoid circular data)
-      const { comparison, ...resultsToSave } = results;
+      const { comparison: _comparison, ...resultsToSave } = results;
       fs.writeFileSync(resultsFile, JSON.stringify(resultsToSave, null, 2));
 
       // Upload the artifact
