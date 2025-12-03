@@ -11,12 +11,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Hello world action step
-        id: hello
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+    
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Test Analysis
+        id: analysis
         uses: ./ # TODO: later remove this with the public address
         with:
-          who-to-greet: sentry
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Use the output from the `hello` step
+      # Use the output from the `analysis` step
       - name: Get the output time
-        run: echo "The time was ${{ steps.hello.outputs.time }}"
+        run: echo "The time was ${{ steps.analysis.outputs.time }}"
