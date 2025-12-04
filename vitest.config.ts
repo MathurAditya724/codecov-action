@@ -2,12 +2,12 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    reporters: ["junit"],
+    reporters: ["default", "junit"],
     outputFile: {
       junit: "report.junit.xml",
     },
     coverage: {
-      include: ["src/__tests__/**/*.ts"],
+      include: ["src/**/*.ts"],
     },
   },
 });
