@@ -57,14 +57,18 @@ export class GitHubClient {
         issue_number: prNumber,
       });
 
-      const existingComment = comments.find((comment) =>
-        comment.body?.includes(identifier),
+      // Check for both new and legacy identifiers for backward compatibility
+      const legacyIdentifier = PRCommentFormatter.getLegacyCommentIdentifier();
+      const existingComment = comments.find(
+        (comment) =>
+          comment.body?.includes(identifier) ||
+          comment.body?.includes(legacyIdentifier)
       );
 
       const fullCommentBody = `${identifier}\n${commentBody}`;
 
       if (existingComment) {
-        // Update existing comment
+        // Update existing comment (will upgrade legacy comments to new format)
         core.info(`Updating existing comment (ID: ${existingComment.id})`);
         await this.octokit.rest.issues.updateComment({
           owner,

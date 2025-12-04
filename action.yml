@@ -6,15 +6,28 @@ inputs:
     description: Glob pattern for finding JUnit XML files
     required: false
     default: './**/*.junit.xml'
+  coverage-xml-pattern:
+    description: Glob pattern for finding Coverage XML files (Clover format)
+    required: false
+    default: './**/clover.xml'
   token:
     description: GitHub token for posting PR comments
     required: true
   base-branch:
-    description: Base branch to compare test results against
+    description: Base branch to compare results against
     required: false
     default: 'main'
+  enable-tests:
+    description: Enable test results reporting
+    required: false
+    default: 'true'
+  enable-coverage:
+    description: Enable coverage reporting
+    required: false
+    default: 'true'
 
 outputs:
+  # Test outputs
   total-tests:
     description: Total number of tests run
   passed-tests:
@@ -31,6 +44,18 @@ outputs:
     description: Number of tests that changed from failing to passing
   tests-broken:
     description: Number of tests that changed from passing to failing
+  
+  # Coverage outputs
+  line-coverage:
+    description: Line coverage percentage
+  branch-coverage:
+    description: Branch coverage percentage
+  coverage-change:
+    description: Change in line coverage compared to base branch
+  branch-coverage-change:
+    description: Change in branch coverage compared to base branch
+  coverage-improved:
+    description: Whether coverage improved compared to base branch (true/false)
 
 runs:
   using: node20
