@@ -1,4 +1,7 @@
 on:
+  pull_request:
+    branches:
+      - "*"
   push:
     branches:
       - "*"
@@ -6,6 +9,9 @@ on:
 jobs:
   test_job:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write  # Required for posting/updating PR comments
 
     steps:
       - name: Checkout

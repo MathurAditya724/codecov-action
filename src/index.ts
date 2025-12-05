@@ -1,9 +1,9 @@
 import * as core from "@actions/core";
 import { PRCommentFormatter } from "./formatters/pr-comment-formatter.js";
-import { JUnitParser } from "./parsers/junit-parser.js";
 import { CoverageParser } from "./parsers/coverage-parser.js";
-import type { TestResults } from "./types/test-results.js";
+import { JUnitParser } from "./parsers/junit-parser.js";
 import type { CoverageResults } from "./types/coverage.js";
+import type { TestResults } from "./types/test-results.js";
 import { ArtifactManager } from "./utils/artifact-manager.js";
 import { TestResultsComparator } from "./utils/comparison.js";
 import { CoverageComparator } from "./utils/coverage-comparison.js";
@@ -12,8 +12,6 @@ import { GitHubClient } from "./utils/github-client.js";
 
 async function run() {
   try {
-    core.info("🚀 Starting Codecov Action - Test Results & Coverage Reporter");
-
     // Get inputs
     const junitPattern =
       core.getInput("junit-xml-pattern") || "./**/*.junit.xml";
@@ -30,14 +28,6 @@ async function run() {
       );
     }
 
-    core.info(`Test results enabled: ${enableTests}`);
-    core.info(`Coverage enabled: ${enableCoverage}`);
-    if (enableTests) {
-      core.info(`JUnit XML pattern: ${junitPattern}`);
-    }
-    if (enableCoverage) {
-      core.info(`Coverage XML pattern: ${coveragePattern}`);
-    }
     core.info(`Base branch for comparison: ${baseBranch}`);
 
     // Initialize GitHub client
@@ -117,9 +107,7 @@ async function processTestResults(
   const files = await fileFinder.findFiles(junitPattern);
 
   if (files.length === 0) {
-    core.warning(
-      `No JUnit XML files found matching pattern: ${junitPattern}`
-    );
+    core.warning(`No JUnit XML files found matching pattern: ${junitPattern}`);
     core.warning(
       "Please ensure your test framework is generating JUnit XML output."
     );
@@ -188,13 +176,19 @@ async function processTestResults(
     // Log comparison summary
     core.info("📈 Test Comparison Summary:");
     core.info(
-      `  Total Tests: ${comparison.deltaTotal >= 0 ? "+" : ""}${comparison.deltaTotal}`
+      `  Total Tests: ${comparison.deltaTotal >= 0 ? "+" : ""}${
+        comparison.deltaTotal
+      }`
     );
     core.info(
-      `  Passed Tests: ${comparison.deltaPassed >= 0 ? "+" : ""}${comparison.deltaPassed}`
+      `  Passed Tests: ${comparison.deltaPassed >= 0 ? "+" : ""}${
+        comparison.deltaPassed
+      }`
     );
     core.info(
-      `  Failed Tests: ${comparison.deltaFailed >= 0 ? "+" : ""}${comparison.deltaFailed}`
+      `  Failed Tests: ${comparison.deltaFailed >= 0 ? "+" : ""}${
+        comparison.deltaFailed
+      }`
     );
     core.info(`  Tests Added: ${comparison.testsAdded.length}`);
     core.info(`  Tests Removed: ${comparison.testsRemoved.length}`);
@@ -300,7 +294,9 @@ async function processCoverage(
   await artifactManager.uploadCoverageResults(aggregatedResults, currentBranch);
 
   // Download and compare with base branch coverage
-  const baseCoverage = await artifactManager.downloadBaseCoverageResults(baseBranch);
+  const baseCoverage = await artifactManager.downloadBaseCoverageResults(
+    baseBranch
+  );
   if (baseCoverage) {
     core.info("🔍 Comparing with base branch coverage...");
     const comparison = CoverageComparator.compareResults(
@@ -312,19 +308,28 @@ async function processCoverage(
     // Log comparison summary
     core.info("📈 Coverage Comparison Summary:");
     core.info(
-      `  Line Coverage: ${comparison.deltaLineRate >= 0 ? "+" : ""}${comparison.deltaLineRate}%`
+      `  Line Coverage: ${comparison.deltaLineRate >= 0 ? "+" : ""}${
+        comparison.deltaLineRate
+      }%`
     );
     core.info(
-      `  Branch Coverage: ${comparison.deltaBranchRate >= 0 ? "+" : ""}${comparison.deltaBranchRate}%`
+      `  Branch Coverage: ${comparison.deltaBranchRate >= 0 ? "+" : ""}${
+        comparison.deltaBranchRate
+      }%`
     );
     core.info(`  Files Added: ${comparison.filesAdded.length}`);
     core.info(`  Files Removed: ${comparison.filesRemoved.length}`);
     core.info(`  Files Changed: ${comparison.filesChanged.length}`);
-    core.info(`  Overall Improvement: ${comparison.improvement ? "Yes" : "No"}`);
+    core.info(
+      `  Overall Improvement: ${comparison.improvement ? "Yes" : "No"}`
+    );
 
     // Set comparison outputs
     core.setOutput("coverage-change", comparison.deltaLineRate.toString());
-    core.setOutput("branch-coverage-change", comparison.deltaBranchRate.toString());
+    core.setOutput(
+      "branch-coverage-change",
+      comparison.deltaBranchRate.toString()
+    );
     core.setOutput("coverage-improved", comparison.improvement.toString());
   } else {
     core.info("ℹ️ No base coverage available for comparison");
