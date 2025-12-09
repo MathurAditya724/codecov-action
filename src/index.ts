@@ -9,6 +9,7 @@ import { TestResultsComparator } from "./utils/comparison.js";
 import { CoverageComparator } from "./utils/coverage-comparison.js";
 import { FileFinder } from "./utils/file-finder.js";
 import { GitHubClient } from "./utils/github-client.js";
+import { writeJobSummary } from "./utils/summary-writer.js";
 
 async function run() {
   try {
@@ -21,6 +22,7 @@ async function run() {
     const baseBranch = core.getInput("base-branch") || "main";
     const enableTests = core.getBooleanInput("enable-tests") !== false;
     const enableCoverage = core.getBooleanInput("enable-coverage") !== false;
+    const postPrComment = core.getBooleanInput("post-pr-comment") === true;
 
     if (!token) {
       throw new Error(
@@ -37,13 +39,8 @@ async function run() {
       `Context: ${contextInfo.eventName} in ${contextInfo.owner}/${contextInfo.repo}`
     );
 
-    // Check if running in PR context
-    if (!githubClient.isPullRequest()) {
-      core.info(
-        "Not running in a pull request context. Results will not be posted as a comment."
-      );
-      core.info("Continuing with parsing for outputs...");
-    }
+    // Log context info
+    core.info(`Post PR comment: ${postPrComment}`);
 
     // Initialize artifact manager
     const artifactManager = new ArtifactManager(token);
@@ -72,8 +69,15 @@ async function run() {
       );
     }
 
-    // Format and post PR comment if in PR context
-    if (githubClient.isPullRequest()) {
+    // Write Job Summary (always)
+    core.info("📝 Writing Job Summary...");
+    await writeJobSummary(
+      aggregatedTestResults || undefined,
+      aggregatedCoverageResults || undefined
+    );
+
+    // Optionally post PR comment if enabled and in PR context
+    if (postPrComment && githubClient.isPullRequest()) {
       const formatter = new PRCommentFormatter();
       const commentBody = formatter.formatComment(
         aggregatedTestResults || undefined,

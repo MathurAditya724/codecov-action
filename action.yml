@@ -11,7 +11,7 @@ inputs:
     required: false
     default: './**/clover.xml'
   token:
-    description: GitHub token for posting PR comments
+    description: GitHub token for API access and artifacts
     required: true
   base-branch:
     description: Base branch to compare results against
@@ -25,6 +25,10 @@ inputs:
     description: Enable coverage reporting
     required: false
     default: 'true'
+  post-pr-comment:
+    description: Post results as a PR comment (in addition to Job Summary)
+    required: false
+    default: 'false'
 
 outputs:
   # Test outputs
