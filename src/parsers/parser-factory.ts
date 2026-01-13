@@ -80,11 +80,7 @@ export class CoverageParserFactory {
     if (lowerPath.endsWith("jacoco.xml") || lowerPath.includes("jacoco")) {
       return "jacoco";
     }
-    if (
-      lowerPath.endsWith("lcov.info") ||
-      lowerPath.endsWith(".lcov") ||
-      lowerPath.endsWith(".info")
-    ) {
+    if (lowerPath.endsWith("lcov.info") || lowerPath.endsWith(".lcov")) {
       return "lcov";
     }
     if (

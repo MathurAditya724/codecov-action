@@ -37,16 +37,6 @@ export class CoberturaParser extends BaseCoverageParser {
   canParse(content: string, filePath?: string): boolean {
     // Check file extension
     if (filePath) {
-      const fileName = filePath.toLowerCase();
-      if (
-        fileName.endsWith("cobertura.xml") ||
-        fileName.endsWith("coverage.xml")
-      ) {
-        // Could be Cobertura, but need to verify content
-        if (!fileName.includes("clover") && !fileName.includes("jacoco")) {
-          // Likely Cobertura if it has the right structure
-        }
-      }
       const ext = this.getFileExtension(filePath);
       if (ext !== "xml") {
         return false;

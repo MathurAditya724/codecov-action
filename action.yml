@@ -79,7 +79,6 @@ inputs:
   coverage-xml-pattern:
     description: '[Deprecated] Glob pattern for finding coverage XML files. Use files/directory instead.'
     required: false
-    deprecationMessage: 'Use "files" or "directory" inputs instead for better multi-format support'
 
 outputs:
   # Test outputs
@@ -113,6 +112,10 @@ outputs:
     description: Whether coverage improved compared to base branch (true/false)
   coverage-format:
     description: The detected or specified coverage format used
+  coverage-name:
+    description: The custom name provided for the coverage upload
+  coverage-flags:
+    description: The flags provided for the coverage upload
 
 runs:
   using: node20

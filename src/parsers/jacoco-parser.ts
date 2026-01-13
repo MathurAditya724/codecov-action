@@ -136,7 +136,6 @@ export class JaCoCoParser extends BaseCoverageParser {
 
     for (const line of sourceLines) {
       const lineNum = Number.parseInt(line.nr || "0", 10);
-      const missedInstructions = Number.parseInt(line.mi || "0", 10);
       const coveredInstructions = Number.parseInt(line.ci || "0", 10);
       const missedBranches = Number.parseInt(line.mb || "0", 10);
       const coveredBranches = Number.parseInt(line.cb || "0", 10);

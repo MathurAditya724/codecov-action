@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
@@ -400,9 +401,12 @@ async function processCoverage(
   core.info("🎯 Processing coverage results...");
   if (name) {
     core.info(`Coverage upload name: ${name}`);
+    core.setOutput("coverage-name", name);
   }
   if (flags.length > 0) {
+    const flagsValue = flags.join(",");
     core.info(`Coverage flags: ${flags.join(", ")}`);
+    core.setOutput("coverage-flags", flagsValue);
   }
 
   // Find coverage files
@@ -456,14 +460,18 @@ async function processCoverage(
   for (const file of validFiles) {
     try {
       verboseLog(`Parsing coverage: ${file}`, verbose);
-      const result = await CoverageParserFactory.parseFile(file, format);
+
+      // Read file once and use for both parsing and format detection
+      const content = fs.readFileSync(file, "utf-8");
+      const result = await CoverageParserFactory.parseContent(
+        content,
+        file,
+        format
+      );
       allResults.push(result);
 
-      // Track detected format
-      const parser = CoverageParserFactory.detectParser(
-        require("node:fs").readFileSync(file, "utf-8"),
-        file
-      );
+      // Track detected format using the already-read content
+      const parser = CoverageParserFactory.detectParser(content, file);
       if (parser && detectedFormat === "none") {
         detectedFormat = parser.format;
       }
