@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
-import type { AggregatedTestResults } from "../types/test-results.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
+import type { AggregatedTestResults } from "../types/test-results.js";
 
 /**
  * Write test results and coverage to GitHub Actions Job Summary
@@ -78,7 +78,9 @@ async function addTestResultsSection(
       const brokenTestsList = results.comparison.testsBroken
         .map(
           (t) =>
-            `- \`${t.identifier.testName}\` (${t.identifier.classname})${t.testCase.failure ? `: ${t.testCase.failure.message}` : ""}`
+            `- \`${t.identifier.testName}\` (${t.identifier.classname})${
+              t.testCase.failure ? `: ${t.testCase.failure.message}` : ""
+            }`
         )
         .join("\n");
 
@@ -91,7 +93,9 @@ async function addTestResultsSection(
     // Tests fixed
     if (results.comparison.testsFixed.length > 0) {
       const fixedTestsList = results.comparison.testsFixed
-        .map((t) => `- \`${t.identifier.testName}\` (${t.identifier.classname})`)
+        .map(
+          (t) => `- \`${t.identifier.testName}\` (${t.identifier.classname})`
+        )
         .join("\n");
 
       summary.addDetails(
@@ -105,7 +109,9 @@ async function addTestResultsSection(
       const addedTestsList = results.comparison.testsAdded
         .map(
           (t) =>
-            `- \`${t.identifier.testName}\` (${t.identifier.classname}) ${t.testCase.failure ? "❌" : "✅"}`
+            `- \`${t.identifier.testName}\` (${t.identifier.classname}) ${
+              t.testCase.failure ? "❌" : "✅"
+            }`
         )
         .join("\n");
 
@@ -118,7 +124,9 @@ async function addTestResultsSection(
     // Tests removed
     if (results.comparison.testsRemoved.length > 0) {
       const removedTestsList = results.comparison.testsRemoved
-        .map((t) => `- \`${t.identifier.testName}\` (${t.identifier.classname})`)
+        .map(
+          (t) => `- \`${t.identifier.testName}\` (${t.identifier.classname})`
+        )
         .join("\n");
 
       summary.addDetails(
@@ -151,7 +159,9 @@ async function addTestResultsSection(
       summary.addDetails(testHeader, details);
     }
   } else if (results.failedTests === 0) {
-    summary.addRaw("\n### ✅ All Tests Passed!\n\nGreat job! All tests are passing successfully.\n\n");
+    summary.addRaw(
+      "\n### ✅ All Tests Passed!\n\nGreat job! All tests are passing successfully.\n\n"
+    );
   }
 }
 
@@ -162,7 +172,7 @@ async function addCoverageSection(
   summary: typeof core.summary,
   results: AggregatedCoverageResults
 ): Promise<void> {
-  summary.addHeading("Codecov Report", 2);
+  summary.addHeading("Coverage Report", 2);
 
   // Calculate metrics
   const totalMissing = results.totalMisses || 0;
@@ -184,7 +194,11 @@ async function addCoverageSection(
     const headRef = results.comparison.headCommit
       ? `\`${results.comparison.headCommit.substring(0, 7)}\``
       : "`head`";
-    const emoji = results.comparison.improvement ? "✅" : results.comparison.deltaLineRate < 0 ? "❌" : "✅";
+    const emoji = results.comparison.improvement
+      ? "✅"
+      : results.comparison.deltaLineRate < 0
+      ? "❌"
+      : "✅";
     summary.addRaw(
       `${emoji} Project coverage is **${results.lineRate}%**. Comparing base (${baseRef}) to head (${headRef}).\n\n`
     );
@@ -194,23 +208,29 @@ async function addCoverageSection(
 
   // Files with missing lines (all in one table)
   const filesWithMissing = results.files
-    .filter((f) => (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0)
+    .filter(
+      (f) =>
+        (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0
+    )
     .sort((a, b) => {
-      const aMissing = (a.missingLines?.length || 0) + (a.partialLines?.length || 0);
-      const bMissing = (b.missingLines?.length || 0) + (b.partialLines?.length || 0);
+      const aMissing =
+        (a.missingLines?.length || 0) + (a.partialLines?.length || 0);
+      const bMissing =
+        (b.missingLines?.length || 0) + (b.partialLines?.length || 0);
       return bMissing - aMissing;
     });
 
   if (filesWithMissing.length > 0) {
     summary.addHeading("Files with missing lines", 3);
 
-    const tableData: Array<Array<string | { data: string; header: boolean }>> = [
+    const tableData: Array<Array<string | { data: string; header: boolean }>> =
       [
-        { data: "File", header: true },
-        { data: "Patch %", header: true },
-        { data: "Lines", header: true },
-      ],
-    ];
+        [
+          { data: "File", header: true },
+          { data: "Patch %", header: true },
+          { data: "Lines", header: true },
+        ],
+      ];
 
     for (const file of filesWithMissing) {
       const fileName = getFileName(file.path);
@@ -226,7 +246,11 @@ async function addCoverageSection(
         linesText = `⚠️ ${partialCount} partials`;
       }
 
-      tableData.push([`\`${fileName}\``, `${file.lineRate.toFixed(2)}%`, linesText]);
+      tableData.push([
+        `\`${fileName}\``,
+        `${file.lineRate.toFixed(2)}%`,
+        linesText,
+      ]);
     }
 
     summary.addTable(tableData);
@@ -241,15 +265,26 @@ async function addCoverageSection(
     const diffLines: string[] = [];
     diffLines.push("```diff");
     diffLines.push("@@            Coverage Diff             @@");
-    diffLines.push(`##    ${padCol(baseBranch, 10)}${padCol(prLabel, 10)}${padCol("+/-", 10)}##`);
+    diffLines.push(
+      `##    ${padCol(baseBranch, 10)}${padCol(prLabel, 10)}${padCol(
+        "+/-",
+        10
+      )}##`
+    );
     diffLines.push("==========================================");
 
     // Coverage line (green if improved)
-    const baseCoverage = (results.lineRate - comparison.deltaLineRate).toFixed(2) + "%";
+    const baseCoverage =
+      (results.lineRate - comparison.deltaLineRate).toFixed(2) + "%";
     const currentCoverage = results.lineRate.toFixed(2) + "%";
     const coverageDelta = formatDeltaSimple(comparison.deltaLineRate) + "%";
     const coveragePrefix = comparison.deltaLineRate >= 0 ? "+" : "-";
-    diffLines.push(`${coveragePrefix} Coverage${padCol(baseCoverage, 10)}${padCol(currentCoverage, 10)}${padCol(coverageDelta, 10)}`);
+    diffLines.push(
+      `${coveragePrefix} Coverage${padCol(baseCoverage, 10)}${padCol(
+        currentCoverage,
+        10
+      )}${padCol(coverageDelta, 10)}`
+    );
 
     diffLines.push("==========================================");
 
@@ -257,17 +292,32 @@ async function addCoverageSection(
     const baseFiles = String(comparison.baseFiles || 0);
     const currentFiles = String(comparison.currentFiles || 0);
     const deltaFiles = formatDeltaSimple(comparison.deltaFiles || 0);
-    diffLines.push(`  Files   ${padCol(baseFiles, 10)}${padCol(currentFiles, 10)}${padCol(deltaFiles, 10)}`);
+    diffLines.push(
+      `  Files   ${padCol(baseFiles, 10)}${padCol(currentFiles, 10)}${padCol(
+        deltaFiles,
+        10
+      )}`
+    );
 
     const baseLines = String(comparison.baseLines || 0);
     const currentLines = String(comparison.currentLines || 0);
     const deltaLines = formatDeltaSimple(comparison.deltaLines || 0);
-    diffLines.push(`  Lines   ${padCol(baseLines, 10)}${padCol(currentLines, 10)}${padCol(deltaLines, 10)}`);
+    diffLines.push(
+      `  Lines   ${padCol(baseLines, 10)}${padCol(currentLines, 10)}${padCol(
+        deltaLines,
+        10
+      )}`
+    );
 
     const baseBranches = String(comparison.baseBranches || 0);
     const currentBranches = String(comparison.currentBranches || 0);
     const deltaBranches = formatDeltaSimple(comparison.deltaBranches || 0);
-    diffLines.push(`  Branches${padCol(baseBranches, 10)}${padCol(currentBranches, 10)}${padCol(deltaBranches, 10)}`);
+    diffLines.push(
+      `  Branches${padCol(baseBranches, 10)}${padCol(
+        currentBranches,
+        10
+      )}${padCol(deltaBranches, 10)}`
+    );
 
     diffLines.push("==========================================");
 
@@ -275,19 +325,34 @@ async function addCoverageSection(
     const baseHits = String(comparison.baseHits || 0);
     const currentHits = String(comparison.currentHits || 0);
     const deltaHits = formatDeltaSimple(comparison.deltaHits || 0);
-    diffLines.push(`+ Hits    ${padCol(baseHits, 10)}${padCol(currentHits, 10)}${padCol(deltaHits, 10)}`);
+    diffLines.push(
+      `+ Hits    ${padCol(baseHits, 10)}${padCol(currentHits, 10)}${padCol(
+        deltaHits,
+        10
+      )}`
+    );
 
     // Misses (red - negative indicator)
     const baseMisses = String(comparison.baseMisses || 0);
     const currentMisses = String(comparison.currentMisses || 0);
     const deltaMisses = formatDeltaSimple(comparison.deltaMisses || 0);
-    diffLines.push(`- Misses  ${padCol(baseMisses, 10)}${padCol(currentMisses, 10)}${padCol(deltaMisses, 10)}`);
+    diffLines.push(
+      `- Misses  ${padCol(baseMisses, 10)}${padCol(currentMisses, 10)}${padCol(
+        deltaMisses,
+        10
+      )}`
+    );
 
     // Partials (red - negative indicator)
     const basePartials = String(comparison.basePartials || 0);
     const currentPartials = String(comparison.currentPartials || 0);
     const deltaPartials = formatDeltaSimple(comparison.deltaPartials || 0);
-    diffLines.push(`- Partials${padCol(basePartials, 10)}${padCol(currentPartials, 10)}${padCol(deltaPartials, 10)}`);
+    diffLines.push(
+      `- Partials${padCol(basePartials, 10)}${padCol(
+        currentPartials,
+        10
+      )}${padCol(deltaPartials, 10)}`
+    );
 
     diffLines.push("```");
 
@@ -369,4 +434,3 @@ function formatTime(seconds: number): string {
   const remainingSeconds = seconds % 60;
   return `${minutes}m ${remainingSeconds.toFixed(0)}s`;
 }
-
