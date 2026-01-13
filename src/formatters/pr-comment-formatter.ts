@@ -215,7 +215,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add coverage section to the comment (clean, minimal format)
+   * Add coverage section to the comment (Codecov-style format with icons)
    */
   private addCoverageSection(
     lines: string[],
@@ -226,18 +226,17 @@ export class PRCommentFormatter {
 
     // Calculate metrics
     const totalMissing = results.totalMisses || 0;
-    const coverageChange = results.comparison
-      ? this.formatCoverageDelta(results.comparison.deltaLineRate)
-      : null;
 
-    // Single line summary
-    const parts: string[] = [`Coverage: **${results.lineRate}%**`];
-    if (coverageChange) {
-      parts[0] += ` (${coverageChange}%)`;
-    }
+    // Line 1: Patch coverage with missing lines
     if (totalMissing > 0) {
-      parts.push(`${totalMissing} lines missing`);
+      lines.push(
+        `:x: Patch coverage is **${results.lineRate}%** with **${totalMissing} lines** missing coverage.`
+      );
+    } else {
+      lines.push(`:white_check_mark: Patch coverage is **${results.lineRate}%**.`);
     }
+
+    // Line 2: Project coverage with comparison info
     if (results.comparison) {
       const baseRef = results.comparison.baseCommit
         ? `\`${results.comparison.baseCommit.substring(0, 7)}\``
@@ -245,13 +244,18 @@ export class PRCommentFormatter {
       const headRef = results.comparison.headCommit
         ? `\`${results.comparison.headCommit.substring(0, 7)}\``
         : "`head`";
-      parts.push(`Comparing ${baseRef} to ${headRef}`);
+      const emoji = results.comparison.improvement
+        ? ":white_check_mark:"
+        : results.comparison.deltaLineRate < 0
+          ? ":x:"
+          : ":white_check_mark:";
+      lines.push(
+        `${emoji} Project coverage is **${results.lineRate}%**. Comparing base (${baseRef}) to head (${headRef}).`
+      );
     }
-
-    lines.push(parts.join(" | "));
     lines.push("");
 
-    // Files with missing lines (all in collapsed section)
+    // Files with missing lines (top 10 visible, rest collapsed)
     const filesWithMissing = results.files
       .filter((f) => (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0)
       .sort((a, b) => {
@@ -261,32 +265,63 @@ export class PRCommentFormatter {
       });
 
     if (filesWithMissing.length > 0) {
-      lines.push("<details>");
-      lines.push(`<summary>Files with missing lines (${filesWithMissing.length} files)</summary>`);
+      lines.push("### Files with missing lines");
       lines.push("");
-      lines.push("| File | Coverage | Missing |");
-      lines.push("|------|----------|---------|");
+      lines.push("| File | Patch % | Lines |");
+      lines.push("|------|---------|-------|");
 
-      for (const file of filesWithMissing) {
+      // Top 10 files visible
+      const visibleFiles = filesWithMissing.slice(0, 10);
+      const remainingFiles = filesWithMissing.slice(10);
+
+      for (const file of visibleFiles) {
         const fileName = this.getFileName(file.path);
         const missingCount = file.missingLines?.length || 0;
         const partialCount = file.partialLines?.length || 0;
 
         let linesText = "";
         if (missingCount > 0 && partialCount > 0) {
-          linesText = `${missingCount} missing, ${partialCount} partial`;
+          linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
         } else if (missingCount > 0) {
-          linesText = `${missingCount} missing`;
+          linesText = `:warning: ${missingCount} Missing`;
         } else if (partialCount > 0) {
-          linesText = `${partialCount} partial`;
+          linesText = `:warning: ${partialCount} partials`;
         }
 
         lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
       }
 
       lines.push("");
-      lines.push("</details>");
-      lines.push("");
+
+      // Remaining files in collapsed section
+      if (remainingFiles.length > 0) {
+        lines.push("<details>");
+        lines.push(`<summary>${remainingFiles.length} more files with missing coverage</summary>`);
+        lines.push("");
+        lines.push("| File | Patch % | Lines |");
+        lines.push("|------|---------|-------|");
+
+        for (const file of remainingFiles) {
+          const fileName = this.getFileName(file.path);
+          const missingCount = file.missingLines?.length || 0;
+          const partialCount = file.partialLines?.length || 0;
+
+          let linesText = "";
+          if (missingCount > 0 && partialCount > 0) {
+            linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+          } else if (missingCount > 0) {
+            linesText = `:warning: ${missingCount} Missing`;
+          } else if (partialCount > 0) {
+            linesText = `:warning: ${partialCount} partials`;
+          }
+
+          lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
+        }
+
+        lines.push("");
+        lines.push("</details>");
+        lines.push("");
+      }
     }
 
     // Coverage diff (collapsible)
@@ -301,7 +336,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add detailed coverage diff table (collapsible)
+   * Add detailed coverage diff in diff code block format (collapsible)
    */
   private addDetailedCoverageDiff(
     lines: string[],
@@ -310,38 +345,75 @@ export class PRCommentFormatter {
     const comparison = results.comparison;
     if (!comparison) return;
 
-    const baseBranch = comparison.baseBranch || "base";
+    const baseBranch = comparison.baseBranch || "main";
+    const prLabel = "#PR";
 
     lines.push("<details>");
     lines.push("<summary>Coverage diff</summary>");
     lines.push("");
+    lines.push("```diff");
 
-    // Clean coverage diff table
-    lines.push(`| Metric | ${baseBranch} | PR | +/- |`);
-    lines.push("|--------|------|-----|-----|");
-    lines.push(
-      `| Coverage | ${(results.lineRate - comparison.deltaLineRate).toFixed(2)}% | ${results.lineRate}% | ${this.formatCoverageDelta(comparison.deltaLineRate)}% |`
-    );
-    lines.push(
-      `| Lines | ${comparison.baseLines || 0} | ${comparison.currentLines || 0} | ${this.formatDeltaSimple(comparison.deltaLines || 0)} |`
-    );
-    lines.push(
-      `| Hits | ${comparison.baseHits || 0} | ${comparison.currentHits || 0} | ${this.formatDeltaSimple(comparison.deltaHits || 0)} |`
-    );
-    lines.push(
-      `| Misses | ${comparison.baseMisses || 0} | ${comparison.currentMisses || 0} | ${this.formatDeltaSimple(comparison.deltaMisses || 0)} |`
-    );
+    // Header
+    lines.push("@@            Coverage Diff             @@");
+    lines.push(`##    ${this.padCol(baseBranch, 10)}${this.padCol(prLabel, 10)}${this.padCol("+/-", 10)}##`);
+    lines.push("==========================================");
 
-    // Only add partials row if there are any
-    if ((comparison.basePartials || 0) > 0 || (comparison.currentPartials || 0) > 0) {
-      lines.push(
-        `| Partials | ${comparison.basePartials || 0} | ${comparison.currentPartials || 0} | ${this.formatDeltaSimple(comparison.deltaPartials || 0)} |`
-      );
-    }
+    // Coverage line (green if improved)
+    const baseCoverage = (results.lineRate - comparison.deltaLineRate).toFixed(2) + "%";
+    const currentCoverage = results.lineRate.toFixed(2) + "%";
+    const coverageDelta = this.formatDeltaSimple(comparison.deltaLineRate) + "%";
+    const coveragePrefix = comparison.deltaLineRate >= 0 ? "+" : "-";
+    lines.push(`${coveragePrefix} Coverage${this.padCol(baseCoverage, 10)}${this.padCol(currentCoverage, 10)}${this.padCol(coverageDelta, 10)}`);
 
+    lines.push("==========================================");
+
+    // Neutral metrics (Files, Lines, Branches)
+    const baseFiles = String(comparison.baseFiles || 0);
+    const currentFiles = String(comparison.currentFiles || 0);
+    const deltaFiles = this.formatDeltaSimple(comparison.deltaFiles || 0);
+    lines.push(`  Files   ${this.padCol(baseFiles, 10)}${this.padCol(currentFiles, 10)}${this.padCol(deltaFiles, 10)}`);
+
+    const baseLines = String(comparison.baseLines || 0);
+    const currentLines = String(comparison.currentLines || 0);
+    const deltaLines = this.formatDeltaSimple(comparison.deltaLines || 0);
+    lines.push(`  Lines   ${this.padCol(baseLines, 10)}${this.padCol(currentLines, 10)}${this.padCol(deltaLines, 10)}`);
+
+    const baseBranches = String(comparison.baseBranches || 0);
+    const currentBranches = String(comparison.currentBranches || 0);
+    const deltaBranches = this.formatDeltaSimple(comparison.deltaBranches || 0);
+    lines.push(`  Branches${this.padCol(baseBranches, 10)}${this.padCol(currentBranches, 10)}${this.padCol(deltaBranches, 10)}`);
+
+    lines.push("==========================================");
+
+    // Hits (green - positive indicator)
+    const baseHits = String(comparison.baseHits || 0);
+    const currentHits = String(comparison.currentHits || 0);
+    const deltaHits = this.formatDeltaSimple(comparison.deltaHits || 0);
+    lines.push(`+ Hits    ${this.padCol(baseHits, 10)}${this.padCol(currentHits, 10)}${this.padCol(deltaHits, 10)}`);
+
+    // Misses (red - negative indicator)
+    const baseMisses = String(comparison.baseMisses || 0);
+    const currentMisses = String(comparison.currentMisses || 0);
+    const deltaMisses = this.formatDeltaSimple(comparison.deltaMisses || 0);
+    lines.push(`- Misses  ${this.padCol(baseMisses, 10)}${this.padCol(currentMisses, 10)}${this.padCol(deltaMisses, 10)}`);
+
+    // Partials (red - negative indicator)
+    const basePartials = String(comparison.basePartials || 0);
+    const currentPartials = String(comparison.currentPartials || 0);
+    const deltaPartials = this.formatDeltaSimple(comparison.deltaPartials || 0);
+    lines.push(`- Partials${this.padCol(basePartials, 10)}${this.padCol(currentPartials, 10)}${this.padCol(deltaPartials, 10)}`);
+
+    lines.push("```");
     lines.push("");
     lines.push("</details>");
     lines.push("");
+  }
+
+  /**
+   * Pad a column value for alignment
+   */
+  private padCol(value: string, width: number): string {
+    return value.padStart(width);
   }
 
   /**

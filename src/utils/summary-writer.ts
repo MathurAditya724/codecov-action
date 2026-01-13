@@ -156,7 +156,7 @@ async function addTestResultsSection(
 }
 
 /**
- * Add coverage section to job summary (clean, minimal format)
+ * Add coverage section to job summary (Codecov-style format with icons)
  */
 async function addCoverageSection(
   summary: typeof core.summary,
@@ -166,18 +166,17 @@ async function addCoverageSection(
 
   // Calculate metrics
   const totalMissing = results.totalMisses || 0;
-  const coverageChange = results.comparison
-    ? formatCoverageDelta(results.comparison.deltaLineRate)
-    : null;
 
-  // Single line summary
-  const parts: string[] = [`Coverage: **${results.lineRate}%**`];
-  if (coverageChange) {
-    parts[0] += ` (${coverageChange}%)`;
-  }
+  // Line 1: Patch coverage with missing lines
   if (totalMissing > 0) {
-    parts.push(`${totalMissing} lines missing`);
+    summary.addRaw(
+      `\n❌ Patch coverage is **${results.lineRate}%** with **${totalMissing} lines** missing coverage.\n`
+    );
+  } else {
+    summary.addRaw(`\n✅ Patch coverage is **${results.lineRate}%**.\n`);
   }
+
+  // Line 2: Project coverage with comparison info
   if (results.comparison) {
     const baseRef = results.comparison.baseCommit
       ? `\`${results.comparison.baseCommit.substring(0, 7)}\``
@@ -185,12 +184,15 @@ async function addCoverageSection(
     const headRef = results.comparison.headCommit
       ? `\`${results.comparison.headCommit.substring(0, 7)}\``
       : "`head`";
-    parts.push(`Comparing ${baseRef} to ${headRef}`);
+    const emoji = results.comparison.improvement ? "✅" : results.comparison.deltaLineRate < 0 ? "❌" : "✅";
+    summary.addRaw(
+      `${emoji} Project coverage is **${results.lineRate}%**. Comparing base (${baseRef}) to head (${headRef}).\n\n`
+    );
+  } else {
+    summary.addRaw("\n");
   }
 
-  summary.addRaw(`\n${parts.join(" | ")}\n\n`);
-
-  // Files with missing lines (all in collapsed section)
+  // Files with missing lines (top 10 visible, rest collapsed)
   const filesWithMissing = results.files
     .filter((f) => (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0)
     .sort((a, b) => {
@@ -200,96 +202,126 @@ async function addCoverageSection(
     });
 
   if (filesWithMissing.length > 0) {
-    // Build markdown table for files
-    const fileRows = filesWithMissing.map((file) => {
+    summary.addHeading("Files with missing lines", 3);
+
+    // Build visible table (top 10 files)
+    const visibleFiles = filesWithMissing.slice(0, 10);
+    const remainingFiles = filesWithMissing.slice(10);
+
+    const tableData: Array<Array<string | { data: string; header: boolean }>> = [
+      [
+        { data: "File", header: true },
+        { data: "Patch %", header: true },
+        { data: "Lines", header: true },
+      ],
+    ];
+
+    for (const file of visibleFiles) {
       const fileName = getFileName(file.path);
       const missingCount = file.missingLines?.length || 0;
       const partialCount = file.partialLines?.length || 0;
 
       let linesText = "";
       if (missingCount > 0 && partialCount > 0) {
-        linesText = `${missingCount} missing, ${partialCount} partial`;
+        linesText = `⚠️ ${missingCount} Missing and ${partialCount} partials`;
       } else if (missingCount > 0) {
-        linesText = `${missingCount} missing`;
+        linesText = `⚠️ ${missingCount} Missing`;
       } else if (partialCount > 0) {
-        linesText = `${partialCount} partial`;
+        linesText = `⚠️ ${partialCount} partials`;
       }
 
-      return `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`;
-    });
-
-    const filesTable = `| File | Coverage | Missing |\n|------|----------|--------|\n${fileRows.join("\n")}`;
-    summary.addDetails(
-      `Files with missing lines (${filesWithMissing.length} files)`,
-      filesTable
-    );
-  }
-
-  // Coverage diff table (using addTable for proper rendering)
-  if (results.comparison) {
-    const comparison = results.comparison;
-    const baseBranch = comparison.baseBranch || "base";
-
-    const diffTableData: Array<Array<string | { data: string; header: boolean }>> = [
-      [
-        { data: "Metric", header: true },
-        { data: baseBranch, header: true },
-        { data: "PR", header: true },
-        { data: "+/-", header: true },
-      ],
-      [
-        "Coverage",
-        `${(results.lineRate - comparison.deltaLineRate).toFixed(2)}%`,
-        `${results.lineRate}%`,
-        `${formatCoverageDelta(comparison.deltaLineRate)}%`,
-      ],
-      [
-        "Lines",
-        `${comparison.baseLines || 0}`,
-        `${comparison.currentLines || 0}`,
-        formatDeltaSimple(comparison.deltaLines || 0),
-      ],
-      [
-        "Hits",
-        `${comparison.baseHits || 0}`,
-        `${comparison.currentHits || 0}`,
-        formatDeltaSimple(comparison.deltaHits || 0),
-      ],
-      [
-        "Misses",
-        `${comparison.baseMisses || 0}`,
-        `${comparison.currentMisses || 0}`,
-        formatDeltaSimple(comparison.deltaMisses || 0),
-      ],
-    ];
-
-    // Only add partials row if there are any
-    if ((comparison.basePartials || 0) > 0 || (comparison.currentPartials || 0) > 0) {
-      diffTableData.push([
-        "Partials",
-        `${comparison.basePartials || 0}`,
-        `${comparison.currentPartials || 0}`,
-        formatDeltaSimple(comparison.deltaPartials || 0),
-      ]);
+      tableData.push([`\`${fileName}\``, `${file.lineRate.toFixed(2)}%`, linesText]);
     }
 
-    // Build the table HTML manually for details section
-    const tableRows = diffTableData
-      .map((row, i) => {
-        if (i === 0) {
-          return `| ${row.map((c) => (typeof c === "object" ? `**${c.data}**` : c)).join(" | ")} |`;
+    summary.addTable(tableData);
+
+    // Remaining files in collapsed section
+    if (remainingFiles.length > 0) {
+      const remainingRows = remainingFiles.map((file) => {
+        const fileName = getFileName(file.path);
+        const missingCount = file.missingLines?.length || 0;
+        const partialCount = file.partialLines?.length || 0;
+
+        let linesText = "";
+        if (missingCount > 0 && partialCount > 0) {
+          linesText = `⚠️ ${missingCount} Missing and ${partialCount} partials`;
+        } else if (missingCount > 0) {
+          linesText = `⚠️ ${missingCount} Missing`;
+        } else if (partialCount > 0) {
+          linesText = `⚠️ ${partialCount} partials`;
         }
-        return `| ${row.join(" | ")} |`;
-      })
-      .join("\n");
 
-    const tableHeader = "| Metric | " + baseBranch + " | PR | +/- |\n|--------|------|-----|-----|";
-    const tableBody = diffTableData
-      .slice(1)
-      .map((row) => `| ${row.join(" | ")} |`)
-      .join("\n");
+        return `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`;
+      });
 
-    summary.addDetails("Coverage diff", `${tableHeader}\n${tableBody}`);
+      const remainingTable = `| File | Patch % | Lines |\n|------|---------|-------|\n${remainingRows.join("\n")}`;
+      summary.addDetails(
+        `${remainingFiles.length} more files with missing coverage`,
+        remainingTable
+      );
+    }
+  }
+
+  // Coverage diff in diff code block format
+  if (results.comparison) {
+    const comparison = results.comparison;
+    const baseBranch = comparison.baseBranch || "main";
+    const prLabel = "#PR";
+
+    const diffLines: string[] = [];
+    diffLines.push("```diff");
+    diffLines.push("@@            Coverage Diff             @@");
+    diffLines.push(`##    ${padCol(baseBranch, 10)}${padCol(prLabel, 10)}${padCol("+/-", 10)}##`);
+    diffLines.push("==========================================");
+
+    // Coverage line (green if improved)
+    const baseCoverage = (results.lineRate - comparison.deltaLineRate).toFixed(2) + "%";
+    const currentCoverage = results.lineRate.toFixed(2) + "%";
+    const coverageDelta = formatDeltaSimple(comparison.deltaLineRate) + "%";
+    const coveragePrefix = comparison.deltaLineRate >= 0 ? "+" : "-";
+    diffLines.push(`${coveragePrefix} Coverage${padCol(baseCoverage, 10)}${padCol(currentCoverage, 10)}${padCol(coverageDelta, 10)}`);
+
+    diffLines.push("==========================================");
+
+    // Neutral metrics (Files, Lines, Branches)
+    const baseFiles = String(comparison.baseFiles || 0);
+    const currentFiles = String(comparison.currentFiles || 0);
+    const deltaFiles = formatDeltaSimple(comparison.deltaFiles || 0);
+    diffLines.push(`  Files   ${padCol(baseFiles, 10)}${padCol(currentFiles, 10)}${padCol(deltaFiles, 10)}`);
+
+    const baseLines = String(comparison.baseLines || 0);
+    const currentLines = String(comparison.currentLines || 0);
+    const deltaLines = formatDeltaSimple(comparison.deltaLines || 0);
+    diffLines.push(`  Lines   ${padCol(baseLines, 10)}${padCol(currentLines, 10)}${padCol(deltaLines, 10)}`);
+
+    const baseBranches = String(comparison.baseBranches || 0);
+    const currentBranches = String(comparison.currentBranches || 0);
+    const deltaBranches = formatDeltaSimple(comparison.deltaBranches || 0);
+    diffLines.push(`  Branches${padCol(baseBranches, 10)}${padCol(currentBranches, 10)}${padCol(deltaBranches, 10)}`);
+
+    diffLines.push("==========================================");
+
+    // Hits (green - positive indicator)
+    const baseHits = String(comparison.baseHits || 0);
+    const currentHits = String(comparison.currentHits || 0);
+    const deltaHits = formatDeltaSimple(comparison.deltaHits || 0);
+    diffLines.push(`+ Hits    ${padCol(baseHits, 10)}${padCol(currentHits, 10)}${padCol(deltaHits, 10)}`);
+
+    // Misses (red - negative indicator)
+    const baseMisses = String(comparison.baseMisses || 0);
+    const currentMisses = String(comparison.currentMisses || 0);
+    const deltaMisses = formatDeltaSimple(comparison.deltaMisses || 0);
+    diffLines.push(`- Misses  ${padCol(baseMisses, 10)}${padCol(currentMisses, 10)}${padCol(deltaMisses, 10)}`);
+
+    // Partials (red - negative indicator)
+    const basePartials = String(comparison.basePartials || 0);
+    const currentPartials = String(comparison.currentPartials || 0);
+    const deltaPartials = formatDeltaSimple(comparison.deltaPartials || 0);
+    diffLines.push(`- Partials${padCol(basePartials, 10)}${padCol(currentPartials, 10)}${padCol(deltaPartials, 10)}`);
+
+    diffLines.push("```");
+
+    summary.addDetails("Coverage diff", diffLines.join("\n"));
   }
 
   // Flags section (only if flags exist)
@@ -312,6 +344,13 @@ async function addCoverageSection(
  */
 function getFileName(path: string): string {
   return path.split("/").pop() || path;
+}
+
+/**
+ * Pad a column value for alignment
+ */
+function padCol(value: string, width: number): string {
+  return value.padStart(width);
 }
 
 /**
