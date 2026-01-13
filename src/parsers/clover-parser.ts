@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import { parseStringPromise } from "xml2js";
 import type {
   AggregatedCoverageResults,
