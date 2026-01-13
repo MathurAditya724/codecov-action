@@ -215,7 +215,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add coverage section to the comment (Codecov-style format)
+   * Add coverage section to the comment (clean, minimal format)
    */
   private addCoverageSection(
     lines: string[],
@@ -224,42 +224,34 @@ export class PRCommentFormatter {
     lines.push("## Codecov Report");
     lines.push("");
 
-    // Calculate total missing lines
+    // Calculate metrics
     const totalMissing = results.totalMisses || 0;
-    const totalPartials = results.totalPartials || 0;
+    const coverageChange = results.comparison
+      ? this.formatCoverageDelta(results.comparison.deltaLineRate)
+      : null;
 
-    // Header summary with patch coverage
-    const coverageEmoji = results.lineRate >= 80 ? ":white_check_mark:" : ":x:";
+    // Single line summary
+    const parts: string[] = [`Coverage: **${results.lineRate}%**`];
+    if (coverageChange) {
+      parts[0] += ` (${coverageChange}%)`;
+    }
     if (totalMissing > 0) {
-      lines.push(
-        `:x: Patch coverage is **${results.lineRate}%** with **${totalMissing} lines** missing coverage.`
-      );
-    } else {
-      lines.push(
-        `${coverageEmoji} Project coverage is **${results.lineRate}%**.`
-      );
+      parts.push(`${totalMissing} lines missing`);
+    }
+    if (results.comparison) {
+      const baseRef = results.comparison.baseCommit
+        ? `\`${results.comparison.baseCommit.substring(0, 7)}\``
+        : "`base`";
+      const headRef = results.comparison.headCommit
+        ? `\`${results.comparison.headCommit.substring(0, 7)}\``
+        : "`head`";
+      parts.push(`Comparing ${baseRef} to ${headRef}`);
     }
 
-    // Comparison info
-    if (results.comparison) {
-      const baseCommit = results.comparison.baseCommit
-        ? results.comparison.baseCommit.substring(0, 7)
-        : "base";
-      const headCommit = results.comparison.headCommit
-        ? results.comparison.headCommit.substring(0, 7)
-        : "head";
-      const improvementEmoji = results.comparison.improvement
-        ? ":white_check_mark:"
-        : results.comparison.deltaLineRate < 0
-          ? ":x:"
-          : ":white_check_mark:";
-      lines.push(
-        `${improvementEmoji} Project coverage is **${results.lineRate}%**. Comparing base (\`${baseCommit}\`) to head (\`${headCommit}\`).`
-      );
-    }
+    lines.push(parts.join(" | "));
     lines.push("");
 
-    // Files with missing lines table
+    // Files with missing lines (all in collapsed section)
     const filesWithMissing = results.files
       .filter((f) => (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0)
       .sort((a, b) => {
@@ -269,45 +261,43 @@ export class PRCommentFormatter {
       });
 
     if (filesWithMissing.length > 0) {
-      lines.push("### Files with missing lines");
+      lines.push("<details>");
+      lines.push(`<summary>Files with missing lines (${filesWithMissing.length} files)</summary>`);
       lines.push("");
-      lines.push("| File | Patch % | Lines |");
-      lines.push("|------|---------|-------|");
+      lines.push("| File | Coverage | Missing |");
+      lines.push("|------|----------|---------|");
 
-      for (const file of filesWithMissing.slice(0, 15)) {
-        const fileName = this.truncateFileName(file.path, 60);
+      for (const file of filesWithMissing) {
+        const fileName = this.getFileName(file.path);
         const missingCount = file.missingLines?.length || 0;
         const partialCount = file.partialLines?.length || 0;
 
         let linesText = "";
         if (missingCount > 0 && partialCount > 0) {
-          linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+          linesText = `${missingCount} missing, ${partialCount} partial`;
         } else if (missingCount > 0) {
-          linesText = `:warning: ${missingCount} Missing`;
+          linesText = `${missingCount} missing`;
         } else if (partialCount > 0) {
-          linesText = `:warning: ${partialCount} partials`;
+          linesText = `${partialCount} partial`;
         }
 
         lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
       }
 
-      if (filesWithMissing.length > 15) {
-        lines.push(`| ... | ... | ${filesWithMissing.length - 15} more files |`);
-      }
+      lines.push("");
+      lines.push("</details>");
       lines.push("");
     }
 
-    // Additional details section (collapsible)
+    // Coverage diff (collapsible)
     if (results.comparison) {
       this.addDetailedCoverageDiff(lines, results);
     }
 
-    // Flags section
+    // Flags section (collapsible)
     if (results.flags && results.flags.length > 0) {
       this.addFlagsSection(lines, results);
     }
-
-    lines.push("");
   }
 
   /**
@@ -320,80 +310,42 @@ export class PRCommentFormatter {
     const comparison = results.comparison;
     if (!comparison) return;
 
-    const baseBranch = comparison.baseBranch || "main";
+    const baseBranch = comparison.baseBranch || "base";
 
     lines.push("<details>");
-    lines.push("<summary>Additional details and impacted files</summary>");
+    lines.push("<summary>Coverage diff</summary>");
     lines.push("");
 
-    // Coverage diff table
-    lines.push("| | Coverage | Diff | |");
-    lines.push("|---|---|---|---|");
-    lines.push(`| | ${baseBranch} | #PR | +/- |`);
+    // Clean coverage diff table
+    lines.push(`| Metric | ${baseBranch} | PR | +/- |`);
+    lines.push("|--------|------|-----|-----|");
     lines.push(
-      `| **Coverage** | ${(results.lineRate - comparison.deltaLineRate).toFixed(2)}% | ${results.lineRate}% | ${this.formatCoverageDelta(comparison.deltaLineRate)}% |`
-    );
-    lines.push(
-      `| Files | ${comparison.baseFiles || 0} | ${comparison.currentFiles || 0} | ${this.formatDeltaSimple(comparison.deltaFiles || 0)} |`
+      `| Coverage | ${(results.lineRate - comparison.deltaLineRate).toFixed(2)}% | ${results.lineRate}% | ${this.formatCoverageDelta(comparison.deltaLineRate)}% |`
     );
     lines.push(
       `| Lines | ${comparison.baseLines || 0} | ${comparison.currentLines || 0} | ${this.formatDeltaSimple(comparison.deltaLines || 0)} |`
     );
     lines.push(
-      `| Branches | ${comparison.baseBranches || 0} | ${comparison.currentBranches || 0} | ${this.formatDeltaSimple(comparison.deltaBranches || 0)} |`
+      `| Hits | ${comparison.baseHits || 0} | ${comparison.currentHits || 0} | ${this.formatDeltaSimple(comparison.deltaHits || 0)} |`
     );
     lines.push(
-      `| + Hits | ${comparison.baseHits || 0} | ${comparison.currentHits || 0} | ${this.formatDeltaSimple(comparison.deltaHits || 0)} |`
-    );
-    lines.push(
-      `| - Misses | ${comparison.baseMisses || 0} | ${comparison.currentMisses || 0} | ${this.formatDeltaSimple(comparison.deltaMisses || 0)} |`
-    );
-    lines.push(
-      `| - Partials | ${comparison.basePartials || 0} | ${comparison.currentPartials || 0} | ${this.formatDeltaSimple(comparison.deltaPartials || 0)} |`
-    );
-    lines.push("");
-
-    // Files with significant coverage changes
-    const significantChanges = comparison.filesChanged.filter(
-      (f) => Math.abs(f.deltaLineRate) >= 5
+      `| Misses | ${comparison.baseMisses || 0} | ${comparison.currentMisses || 0} | ${this.formatDeltaSimple(comparison.deltaMisses || 0)} |`
     );
 
-    if (significantChanges.length > 0 || comparison.filesAdded.length > 0 || comparison.filesRemoved.length > 0) {
-      lines.push("#### Impacted Files");
-      lines.push("");
-      lines.push("| File | Coverage Δ | |");
-      lines.push("|------|------------|---|");
-
-      // Changed files
-      for (const file of significantChanges.slice(0, 10)) {
-        const fileName = this.truncateFileName(file.path, 50);
-        const changeEmoji = file.deltaLineRate > 0 ? ":arrow_up:" : ":arrow_down:";
-        lines.push(
-          `| \`${fileName}\` | ${file.currentLineRate}% (${this.formatCoverageDelta(file.deltaLineRate)}%) | ${changeEmoji} |`
-        );
-      }
-
-      // Added files
-      for (const file of comparison.filesAdded.slice(0, 5)) {
-        const fileName = this.truncateFileName(file.path, 50);
-        lines.push(`| \`${fileName}\` | ${file.lineRate}% | :new: |`);
-      }
-
-      // Removed files
-      for (const file of comparison.filesRemoved.slice(0, 3)) {
-        const fileName = this.truncateFileName(file.path, 50);
-        lines.push(`| \`${fileName}\` | — | :x: removed |`);
-      }
-
-      lines.push("");
+    // Only add partials row if there are any
+    if ((comparison.basePartials || 0) > 0 || (comparison.currentPartials || 0) > 0) {
+      lines.push(
+        `| Partials | ${comparison.basePartials || 0} | ${comparison.currentPartials || 0} | ${this.formatDeltaSimple(comparison.deltaPartials || 0)} |`
+      );
     }
 
+    lines.push("");
     lines.push("</details>");
     lines.push("");
   }
 
   /**
-   * Add flags section
+   * Add flags section (collapsible)
    */
   private addFlagsSection(
     lines: string[],
@@ -401,20 +353,26 @@ export class PRCommentFormatter {
   ): void {
     if (!results.flags || results.flags.length === 0) return;
 
-    lines.push("### Flags");
+    lines.push("<details>");
+    lines.push(`<summary>Flags (${results.flags.length})</summary>`);
     lines.push("");
-    lines.push("| Flag | Coverage Δ |");
-    lines.push("|------|------------|");
 
     for (const flag of results.flags) {
       const coverageChange = results.comparison
-        ? this.formatCoverageDelta(results.comparison.deltaLineRate)
-        : "—";
-      lines.push(
-        `| \`${flag}\` | ${results.lineRate}% <${results.lineRate}%> (${coverageChange}%) |`
-      );
+        ? ` (${this.formatCoverageDelta(results.comparison.deltaLineRate)}%)`
+        : "";
+      lines.push(`- \`${flag}\`: ${results.lineRate}%${coverageChange}`);
     }
     lines.push("");
+    lines.push("</details>");
+    lines.push("");
+  }
+
+  /**
+   * Get just the filename from a path
+   */
+  private getFileName(path: string): string {
+    return path.split("/").pop() || path;
   }
 
   /**
