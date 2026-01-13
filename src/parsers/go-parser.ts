@@ -218,16 +218,24 @@ export class GoParser extends BaseCoverageParser {
 
     // Convert to LineCoverage array
     const lines: LineCoverage[] = [];
+    const missingLines: number[] = [];
+
     for (const [lineNum, count] of lineMap.entries()) {
       lines.push({
         lineNumber: lineNum,
         count,
         type: "stmt",
       });
+
+      // Track missing lines
+      if (count === 0) {
+        missingLines.push(lineNum);
+      }
     }
 
     // Sort by line number
     lines.sort((a, b) => a.lineNumber - b.lineNumber);
+    missingLines.sort((a, b) => a - b);
 
     return {
       name: fileName,
@@ -241,6 +249,8 @@ export class GoParser extends BaseCoverageParser {
       lineRate: this.calculateRate(coveredStatements, totalStatements),
       branchRate: 0,
       lines,
+      missingLines,
+      partialLines: [], // Go coverage doesn't have branch coverage
     };
   }
 }

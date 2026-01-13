@@ -215,6 +215,9 @@ export class LcovParser extends BaseCoverageParser {
 
     // Build line coverage array
     const lineCoverage: LineCoverage[] = [];
+    const missingLines: number[] = [];
+    const partialLines: number[] = [];
+
     for (const [lineNum, hitCount] of lineData.entries()) {
       const hasBranch = branchData.has(lineNum);
       lineCoverage.push({
@@ -222,10 +225,25 @@ export class LcovParser extends BaseCoverageParser {
         count: hitCount,
         type: hasBranch ? "cond" : "stmt",
       });
+
+      // Track missing lines
+      if (hitCount === 0) {
+        missingLines.push(lineNum);
+      }
+
+      // Track partial lines (branches with some but not all branches covered)
+      if (hasBranch && hitCount > 0) {
+        const branch = branchData.get(lineNum)!;
+        if (branch.covered > 0 && branch.covered < branch.total) {
+          partialLines.push(lineNum);
+        }
+      }
     }
 
     // Sort by line number
     lineCoverage.sort((a, b) => a.lineNumber - b.lineNumber);
+    missingLines.sort((a, b) => a - b);
+    partialLines.sort((a, b) => a - b);
 
     const fileName = sourceFile.split("/").pop() || sourceFile;
 
@@ -241,6 +259,8 @@ export class LcovParser extends BaseCoverageParser {
       lineRate: this.calculateRate(linesHit, linesFound),
       branchRate: this.calculateRate(branchesHit, branchesFound),
       lines: lineCoverage,
+      missingLines,
+      partialLines,
     };
   }
 }

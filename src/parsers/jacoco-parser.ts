@@ -134,6 +134,8 @@ export class JaCoCoParser extends BaseCoverageParser {
 
     // Parse line-by-line coverage
     const lines: LineCoverage[] = [];
+    const missingLines: number[] = [];
+    const partialLines: number[] = [];
     const sourceLines = this.ensureArray(sourceFile.line);
 
     for (const lineData of sourceLines) {
@@ -156,6 +158,16 @@ export class JaCoCoParser extends BaseCoverageParser {
         trueCount: hasBranches ? coveredBranches : undefined,
         falseCount: hasBranches ? missedBranches : undefined,
       });
+
+      // Track missing lines
+      if (!isCovered) {
+        missingLines.push(lineNum);
+      }
+
+      // Track partial lines (some branches covered but not all)
+      if (hasBranches && coveredBranches > 0 && missedBranches > 0) {
+        partialLines.push(lineNum);
+      }
     }
 
     // Sort by line number
@@ -181,6 +193,8 @@ export class JaCoCoParser extends BaseCoverageParser {
         counters.branch.total
       ),
       lines,
+      missingLines,
+      partialLines,
     };
   }
 

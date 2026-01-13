@@ -218,18 +218,59 @@ export class IstanbulParser extends BaseCoverageParser {
       }
     }
 
+    // Build branch coverage map by line for partial detection
+    const branchCoverageByLine: Map<
+      number,
+      { total: number; covered: number }
+    > = new Map();
+    for (const [branchId, branch] of Object.entries(branchMap)) {
+      const line = branch.line;
+      const hits = branchHits[branchId] || [];
+      const total = hits.length;
+      const covered = hits.filter((h) => h > 0).length;
+
+      if (!branchCoverageByLine.has(line)) {
+        branchCoverageByLine.set(line, { total: 0, covered: 0 });
+      }
+      const existing = branchCoverageByLine.get(line)!;
+      existing.total += total;
+      existing.covered += covered;
+    }
+
     // Convert to LineCoverage array
     const lines: LineCoverage[] = [];
+    const missingLines: number[] = [];
+    const partialLines: number[] = [];
+
     for (const [lineNum, data] of lineMap.entries()) {
       lines.push({
         lineNumber: lineNum,
         count: data.count,
         type: data.hasBranch ? "cond" : "stmt",
       });
+
+      // Track missing lines
+      if (data.count === 0) {
+        missingLines.push(lineNum);
+      }
+
+      // Track partial lines (branches with some but not all covered)
+      if (data.hasBranch && data.count > 0) {
+        const branchCoverage = branchCoverageByLine.get(lineNum);
+        if (
+          branchCoverage &&
+          branchCoverage.covered > 0 &&
+          branchCoverage.covered < branchCoverage.total
+        ) {
+          partialLines.push(lineNum);
+        }
+      }
     }
 
     // Sort by line number
     lines.sort((a, b) => a.lineNumber - b.lineNumber);
+    missingLines.sort((a, b) => a - b);
+    partialLines.sort((a, b) => a - b);
 
     return {
       name: fileName,
@@ -243,6 +284,8 @@ export class IstanbulParser extends BaseCoverageParser {
       lineRate: this.calculateRate(coveredStatements, totalStatements),
       branchRate: this.calculateRate(coveredBranches, totalBranches),
       lines,
+      missingLines,
+      partialLines,
     };
   }
 }

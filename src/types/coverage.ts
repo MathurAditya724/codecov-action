@@ -10,6 +10,10 @@ export interface FileCoverage {
   lineRate: number; // Percentage
   branchRate: number; // Percentage
   lines: LineCoverage[];
+  // Detailed line tracking for reporting
+  missingLines?: number[]; // Line numbers with 0 hits
+  partialLines?: number[]; // Line numbers with partial branch coverage
+  patchCoverage?: number; // Coverage % for changed lines only (if applicable)
 }
 
 export interface LineCoverage {
@@ -53,6 +57,13 @@ export interface AggregatedCoverageResults {
   // Flag metadata for categorizing coverage
   flags?: string[];
   name?: string;
+  // Detailed aggregate metrics for reporting
+  totalHits?: number; // Total lines with hits > 0
+  totalMisses?: number; // Total lines with 0 hits
+  totalPartials?: number; // Total lines with partial branch coverage
+  totalBranches?: number; // Total branch count
+  totalFiles?: number; // Total number of files
+  totalLines?: number; // Total number of lines tracked
 }
 
 export interface FileComparison {
@@ -68,6 +79,9 @@ export interface FileComparison {
   deltaCoveredStatements: number;
   deltaConditionals: number;
   deltaCoveredConditionals: number;
+  // Detailed line tracking
+  missingLines?: number;
+  partialLines?: number;
 }
 
 export interface CoverageComparison {
@@ -83,5 +97,30 @@ export interface CoverageComparison {
   deltaTotalMethods: number;
   deltaCoveredMethods: number;
   improvement: boolean; // Overall improvement in coverage
+  // Detailed comparison metrics
+  deltaFiles?: number;
+  deltaLines?: number;
+  deltaBranches?: number;
+  deltaHits?: number;
+  deltaMisses?: number;
+  deltaPartials?: number;
+  // Base/head reference info
+  baseBranch?: string;
+  headCommit?: string;
+  baseCommit?: string;
+  // Base metrics for diff table
+  baseFiles?: number;
+  baseLines?: number;
+  baseBranches?: number;
+  baseHits?: number;
+  baseMisses?: number;
+  basePartials?: number;
+  // Current metrics for diff table
+  currentFiles?: number;
+  currentLines?: number;
+  currentBranches?: number;
+  currentHits?: number;
+  currentMisses?: number;
+  currentPartials?: number;
 }
 

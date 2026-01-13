@@ -136,6 +136,8 @@ export class CoberturaParser extends BaseCoverageParser {
       (classElement.name as string) || filename.split("/").pop() || "";
 
     const lines: LineCoverage[] = [];
+    const missingLines: number[] = [];
+    const partialLines: number[] = [];
     const classLines = this.ensureArray(
       (classElement.lines as Record<string, unknown>)?.line
     );
@@ -154,9 +156,12 @@ export class CoberturaParser extends BaseCoverageParser {
       statements++;
       if (hits > 0) {
         coveredStatements++;
+      } else {
+        missingLines.push(lineNum);
       }
 
       // Handle branch coverage
+      let isPartial = false;
       if (isBranch) {
         const conditionCoverage = line["condition-coverage"] as string;
         if (conditionCoverage) {
@@ -167,14 +172,23 @@ export class CoberturaParser extends BaseCoverageParser {
             const total = Number.parseInt(match[2], 10);
             conditionals += total;
             coveredConditionals += covered;
+            // Partial if some but not all branches covered
+            if (covered > 0 && covered < total) {
+              isPartial = true;
+            }
           }
         } else {
           // Assume 2 branches (true/false) if no details
           conditionals += 2;
           if (hits > 0) {
             coveredConditionals += 1; // Conservative estimate
+            isPartial = true; // Assume partial
           }
         }
+      }
+
+      if (isPartial) {
+        partialLines.push(lineNum);
       }
 
       lines.push({
@@ -223,6 +237,8 @@ export class CoberturaParser extends BaseCoverageParser {
       lineRate: this.calculateRate(coveredStatements, statements),
       branchRate: this.calculateRate(coveredConditionals, conditionals),
       lines,
+      missingLines,
+      partialLines,
     };
   }
 }

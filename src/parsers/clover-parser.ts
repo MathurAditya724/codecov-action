@@ -138,22 +138,48 @@ export class CloverParser extends BaseCoverageParser {
         ? [fileElement.line]
         : [];
 
+    const missingLines: number[] = [];
+    const partialLines: number[] = [];
+
     for (const line of fileLines) {
+      const lineNum = Number.parseInt((line as Record<string, string>).num, 10);
+      const count = Number.parseInt((line as Record<string, string>).count, 10);
+      const type =
+        ((line as Record<string, string>).type as "stmt" | "cond" | "method") ||
+        "stmt";
+      const trueCount =
+        (line as Record<string, string>).truecount !== undefined
+          ? Number.parseInt((line as Record<string, string>).truecount, 10)
+          : undefined;
+      const falseCount =
+        (line as Record<string, string>).falsecount !== undefined
+          ? Number.parseInt((line as Record<string, string>).falsecount, 10)
+          : undefined;
+
       lines.push({
-        lineNumber: Number.parseInt((line as Record<string, string>).num, 10),
-        count: Number.parseInt((line as Record<string, string>).count, 10),
-        type:
-          ((line as Record<string, string>).type as "stmt" | "cond" | "method") ||
-          "stmt",
-        trueCount:
-          (line as Record<string, string>).truecount !== undefined
-            ? Number.parseInt((line as Record<string, string>).truecount, 10)
-            : undefined,
-        falseCount:
-          (line as Record<string, string>).falsecount !== undefined
-            ? Number.parseInt((line as Record<string, string>).falsecount, 10)
-            : undefined,
+        lineNumber: lineNum,
+        count,
+        type,
+        trueCount,
+        falseCount,
       });
+
+      // Track missing lines (count === 0)
+      if (count === 0) {
+        missingLines.push(lineNum);
+      }
+
+      // Track partial lines (conditionals with incomplete branch coverage)
+      if (
+        type === "cond" &&
+        count > 0 &&
+        trueCount !== undefined &&
+        falseCount !== undefined
+      ) {
+        if (trueCount === 0 || falseCount === 0) {
+          partialLines.push(lineNum);
+        }
+      }
     }
 
     return {
@@ -168,6 +194,8 @@ export class CloverParser extends BaseCoverageParser {
       lineRate: metrics.lineRate,
       branchRate: metrics.branchRate,
       lines,
+      missingLines,
+      partialLines,
     };
   }
 

@@ -156,183 +156,171 @@ async function addTestResultsSection(
 }
 
 /**
- * Add coverage section to job summary
+ * Add coverage section to job summary (clean, minimal format)
  */
 async function addCoverageSection(
   summary: typeof core.summary,
   results: AggregatedCoverageResults
 ): Promise<void> {
-  // Build header with optional flags
-  let headerText = "Coverage Report 🎯";
-  if (results.flags && results.flags.length > 0) {
-    headerText = `Coverage Report 🎯 [${results.flags.join(", ")}]`;
+  summary.addHeading("Codecov Report", 2);
+
+  // Calculate metrics
+  const totalMissing = results.totalMisses || 0;
+  const coverageChange = results.comparison
+    ? formatCoverageDelta(results.comparison.deltaLineRate)
+    : null;
+
+  // Single line summary
+  const parts: string[] = [`Coverage: **${results.lineRate}%**`];
+  if (coverageChange) {
+    parts[0] += ` (${coverageChange}%)`;
   }
-  summary.addHeading(headerText, 2);
-
-  // Show name and flags metadata if present
-  if (results.name || (results.flags && results.flags.length > 0)) {
-    const metaParts: string[] = [];
-    if (results.name) {
-      metaParts.push(`**Name:** ${results.name}`);
-    }
-    if (results.flags && results.flags.length > 0) {
-      const flagBadges = results.flags
-        .map((f) => `\`${f}\``)
-        .join(" ");
-      metaParts.push(`**Flags:** ${flagBadges}`);
-    }
-    summary.addRaw(`\n${metaParts.join(" | ")}\n\n`);
+  if (totalMissing > 0) {
+    parts.push(`${totalMissing} lines missing`);
   }
-
-  // Coverage summary table
-  const lineEmoji = getCoverageEmoji(results.lineRate);
-  const branchEmoji = getCoverageEmoji(results.branchRate);
-  const methodCoverage = results.totalMethods > 0
-    ? ((results.coveredMethods / results.totalMethods) * 100).toFixed(2)
-    : "0";
-
-  summary.addTable([
-    [
-      { data: "Metric", header: true },
-      { data: "Coverage", header: true },
-      { data: "Covered/Total", header: true },
-    ],
-    [
-      `${lineEmoji} Line Coverage`,
-      `${results.lineRate}%`,
-      `${results.coveredStatements}/${results.totalStatements}`,
-    ],
-    [
-      `${branchEmoji} Branch Coverage`,
-      `${results.branchRate}%`,
-      `${results.coveredConditionals}/${results.totalConditionals}`,
-    ],
-    [
-      `🔧 Method Coverage`,
-      `${methodCoverage}%`,
-      `${results.coveredMethods}/${results.totalMethods}`,
-    ],
-  ]);
-
-  // Add comparison section if available
   if (results.comparison) {
-    summary.addHeading("📊 Coverage Change from Base Branch", 3);
+    const baseRef = results.comparison.baseCommit
+      ? `\`${results.comparison.baseCommit.substring(0, 7)}\``
+      : "`base`";
+    const headRef = results.comparison.headCommit
+      ? `\`${results.comparison.headCommit.substring(0, 7)}\``
+      : "`head`";
+    parts.push(`Comparing ${baseRef} to ${headRef}`);
+  }
 
-    // Improvement or degradation indicator
-    if (results.comparison.improvement) {
-      summary.addRaw("\n#### 📈 Coverage Improved!\n\n");
-    } else if (
-      results.comparison.deltaLineRate < 0 ||
-      results.comparison.deltaBranchRate < 0
-    ) {
-      summary.addRaw("\n#### 📉 Coverage Decreased\n\n");
-    } else {
-      summary.addRaw("\n#### ➡️ Coverage Unchanged\n\n");
-    }
+  summary.addRaw(`\n${parts.join(" | ")}\n\n`);
 
-    summary.addTable([
+  // Files with missing lines (all in collapsed section)
+  const filesWithMissing = results.files
+    .filter((f) => (f.missingLines?.length || 0) > 0 || (f.partialLines?.length || 0) > 0)
+    .sort((a, b) => {
+      const aMissing = (a.missingLines?.length || 0) + (a.partialLines?.length || 0);
+      const bMissing = (b.missingLines?.length || 0) + (b.partialLines?.length || 0);
+      return bMissing - aMissing;
+    });
+
+  if (filesWithMissing.length > 0) {
+    // Build markdown table for files
+    const fileRows = filesWithMissing.map((file) => {
+      const fileName = getFileName(file.path);
+      const missingCount = file.missingLines?.length || 0;
+      const partialCount = file.partialLines?.length || 0;
+
+      let linesText = "";
+      if (missingCount > 0 && partialCount > 0) {
+        linesText = `${missingCount} missing, ${partialCount} partial`;
+      } else if (missingCount > 0) {
+        linesText = `${missingCount} missing`;
+      } else if (partialCount > 0) {
+        linesText = `${partialCount} partial`;
+      }
+
+      return `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`;
+    });
+
+    const filesTable = `| File | Coverage | Missing |\n|------|----------|--------|\n${fileRows.join("\n")}`;
+    summary.addDetails(
+      `Files with missing lines (${filesWithMissing.length} files)`,
+      filesTable
+    );
+  }
+
+  // Coverage diff table (using addTable for proper rendering)
+  if (results.comparison) {
+    const comparison = results.comparison;
+    const baseBranch = comparison.baseBranch || "base";
+
+    const diffTableData: Array<Array<string | { data: string; header: boolean }>> = [
       [
         { data: "Metric", header: true },
-        { data: "Change", header: true },
+        { data: baseBranch, header: true },
+        { data: "PR", header: true },
+        { data: "+/-", header: true },
       ],
-      ["Line Coverage", `${formatCoverageDelta(results.comparison.deltaLineRate)}%`],
-      ["Branch Coverage", `${formatCoverageDelta(results.comparison.deltaBranchRate)}%`],
-      ["Total Statements", formatDelta(results.comparison.deltaTotalStatements)],
-      ["Covered Statements", formatDelta(results.comparison.deltaCoveredStatements)],
-    ]);
+      [
+        "Coverage",
+        `${(results.lineRate - comparison.deltaLineRate).toFixed(2)}%`,
+        `${results.lineRate}%`,
+        `${formatCoverageDelta(comparison.deltaLineRate)}%`,
+      ],
+      [
+        "Lines",
+        `${comparison.baseLines || 0}`,
+        `${comparison.currentLines || 0}`,
+        formatDeltaSimple(comparison.deltaLines || 0),
+      ],
+      [
+        "Hits",
+        `${comparison.baseHits || 0}`,
+        `${comparison.currentHits || 0}`,
+        formatDeltaSimple(comparison.deltaHits || 0),
+      ],
+      [
+        "Misses",
+        `${comparison.baseMisses || 0}`,
+        `${comparison.currentMisses || 0}`,
+        formatDeltaSimple(comparison.deltaMisses || 0),
+      ],
+    ];
 
-    // Files with significant coverage changes
-    const significantChanges = results.comparison.filesChanged.filter(
-      (f) => Math.abs(f.deltaLineRate) >= 5
-    );
-
-    if (significantChanges.length > 0) {
-      const degraded = significantChanges.filter((f) => f.deltaLineRate < 0);
-      const improved = significantChanges.filter((f) => f.deltaLineRate > 0);
-
-      if (degraded.length > 0) {
-        const degradedList = degraded
-          .slice(0, 10)
-          .map(
-            (f) =>
-              `- \`${f.name.length > 40 ? `...${f.name.slice(-37)}` : f.name}\`: ${formatCoverageDelta(f.deltaLineRate)}% (${f.baseLineRate}% → ${f.currentLineRate}%)`
-          )
-          .join("\n");
-
-        summary.addDetails(
-          `📉 Files with Decreased Coverage (${degraded.length})`,
-          degradedList
-        );
-      }
-
-      if (improved.length > 0) {
-        const improvedList = improved
-          .slice(0, 10)
-          .map(
-            (f) =>
-              `- \`${f.name.length > 40 ? `...${f.name.slice(-37)}` : f.name}\`: ${formatCoverageDelta(f.deltaLineRate)}% (${f.baseLineRate}% → ${f.currentLineRate}%)`
-          )
-          .join("\n");
-
-        summary.addDetails(
-          `📈 Files with Improved Coverage (${improved.length})`,
-          improvedList
-        );
-      }
+    // Only add partials row if there are any
+    if ((comparison.basePartials || 0) > 0 || (comparison.currentPartials || 0) > 0) {
+      diffTableData.push([
+        "Partials",
+        `${comparison.basePartials || 0}`,
+        `${comparison.currentPartials || 0}`,
+        formatDeltaSimple(comparison.deltaPartials || 0),
+      ]);
     }
 
-    // New files
-    if (results.comparison.filesAdded.length > 0) {
-      const addedList = results.comparison.filesAdded
-        .slice(0, 10)
-        .map(
-          (f) =>
-            `- \`${f.name.length > 40 ? `...${f.name.slice(-37)}` : f.name}\`: ${getCoverageEmoji(f.lineRate)} ${f.lineRate}%`
-        )
-        .join("\n");
-
-      summary.addDetails(
-        `➕ New Files with Coverage (${results.comparison.filesAdded.length})`,
-        addedList
-      );
-    }
-
-    // Removed files
-    if (results.comparison.filesRemoved.length > 0) {
-      const removedList = results.comparison.filesRemoved
-        .slice(0, 10)
-        .map((f) => `- \`${f.name}\``)
-        .join("\n");
-
-      summary.addDetails(
-        `➖ Removed Files (${results.comparison.filesRemoved.length})`,
-        removedList
-      );
-    }
-  }
-
-  // Show files with low coverage (< 50%)
-  const lowCoverageFiles = results.files.filter(
-    (f) => f.lineRate < 50 && f.lineRate > 0
-  );
-
-  if (lowCoverageFiles.length > 0) {
-    const sortedFiles = lowCoverageFiles
-      .sort((a, b) => a.lineRate - b.lineRate)
-      .slice(0, 10);
-
-    const lowCoverageList = sortedFiles
-      .map(
-        (f) =>
-          `- \`${f.name.length > 50 ? `...${f.name.slice(-47)}` : f.name}\`: ${getCoverageEmoji(f.lineRate)} ${f.lineRate}% line, ${getCoverageEmoji(f.branchRate)} ${f.branchRate}% branch`
-      )
+    // Build the table HTML manually for details section
+    const tableRows = diffTableData
+      .map((row, i) => {
+        if (i === 0) {
+          return `| ${row.map((c) => (typeof c === "object" ? `**${c.data}**` : c)).join(" | ")} |`;
+        }
+        return `| ${row.join(" | ")} |`;
+      })
       .join("\n");
 
-    summary.addDetails(
-      `⚠️ Files with Low Coverage (${lowCoverageFiles.length})`,
-      lowCoverageList + (lowCoverageFiles.length > 10 ? `\n\n...and ${lowCoverageFiles.length - 10} more files` : "")
-    );
+    const tableHeader = "| Metric | " + baseBranch + " | PR | +/- |\n|--------|------|-----|-----|";
+    const tableBody = diffTableData
+      .slice(1)
+      .map((row) => `| ${row.join(" | ")} |`)
+      .join("\n");
+
+    summary.addDetails("Coverage diff", `${tableHeader}\n${tableBody}`);
   }
+
+  // Flags section (only if flags exist)
+  if (results.flags && results.flags.length > 0) {
+    const flagsList = results.flags
+      .map((flag) => {
+        const change = results.comparison
+          ? ` (${formatCoverageDelta(results.comparison.deltaLineRate)}%)`
+          : "";
+        return `- \`${flag}\`: ${results.lineRate}%${change}`;
+      })
+      .join("\n");
+
+    summary.addDetails(`Flags (${results.flags.length})`, flagsList);
+  }
+}
+
+/**
+ * Get just the filename from a path
+ */
+function getFileName(path: string): string {
+  return path.split("/").pop() || path;
+}
+
+/**
+ * Format delta value with sign only (no emoji)
+ */
+function formatDeltaSimple(delta: number): string {
+  if (delta === 0) return "—";
+  const sign = delta > 0 ? "+" : "";
+  return `${sign}${delta}`;
 }
 
 /**
@@ -356,16 +344,6 @@ function formatCoverageDelta(delta: number): string {
   }
   const sign = delta > 0 ? "+" : "";
   return `${sign}${delta.toFixed(2)}`;
-}
-
-/**
- * Get emoji based on coverage percentage
- */
-function getCoverageEmoji(coverage: number): string {
-  if (coverage >= 80) return "🟢";
-  if (coverage >= 50) return "🟡";
-  if (coverage > 0) return "🔴";
-  return "⚪";
 }
 
 /**
