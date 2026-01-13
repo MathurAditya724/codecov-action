@@ -509,8 +509,22 @@ async function processCoverage(
   // Aggregate results
   const aggregatedResults = CoverageParserFactory.aggregateResults(allResults);
 
+  // Add flags and name metadata to the results
+  if (flags.length > 0) {
+    aggregatedResults.flags = flags;
+  }
+  if (name) {
+    aggregatedResults.name = name;
+  }
+
   core.info("🎯 Coverage Summary:");
   core.info(`  Format: ${detectedFormat ?? "unknown"}`);
+  if (flags.length > 0) {
+    core.info(`  Flags: ${flags.join(", ")}`);
+  }
+  if (name) {
+    core.info(`  Name: ${name}`);
+  }
   core.info(`  Line Coverage: ${aggregatedResults.lineRate}%`);
   core.info(`  Branch Coverage: ${aggregatedResults.branchRate}%`);
   core.info(
@@ -523,12 +537,17 @@ async function processCoverage(
     `  Methods: ${aggregatedResults.coveredMethods}/${aggregatedResults.totalMethods}`
   );
 
-  // Upload current coverage as artifact
-  await artifactManager.uploadCoverageResults(aggregatedResults, currentBranch);
+  // Upload current coverage as artifact (with flags for separate storage)
+  await artifactManager.uploadCoverageResults(
+    aggregatedResults,
+    currentBranch,
+    flags.length > 0 ? flags : undefined
+  );
 
-  // Download and compare with base branch coverage
+  // Download and compare with base branch coverage (flag-aware)
   const baseCoverage = await artifactManager.downloadBaseCoverageResults(
-    baseBranch
+    baseBranch,
+    flags.length > 0 ? flags : undefined
   );
   if (baseCoverage) {
     core.info("🔍 Comparing with base branch coverage...");

@@ -162,7 +162,27 @@ async function addCoverageSection(
   summary: typeof core.summary,
   results: AggregatedCoverageResults
 ): Promise<void> {
-  summary.addHeading("Coverage Report 🎯", 2);
+  // Build header with optional flags
+  let headerText = "Coverage Report 🎯";
+  if (results.flags && results.flags.length > 0) {
+    headerText = `Coverage Report 🎯 [${results.flags.join(", ")}]`;
+  }
+  summary.addHeading(headerText, 2);
+
+  // Show name and flags metadata if present
+  if (results.name || (results.flags && results.flags.length > 0)) {
+    const metaParts: string[] = [];
+    if (results.name) {
+      metaParts.push(`**Name:** ${results.name}`);
+    }
+    if (results.flags && results.flags.length > 0) {
+      const flagBadges = results.flags
+        .map((f) => `\`${f}\``)
+        .join(" ");
+      metaParts.push(`**Flags:** ${flagBadges}`);
+    }
+    summary.addRaw(`\n${metaParts.join(" | ")}\n\n`);
+  }
 
   // Coverage summary table
   const lineEmoji = getCoverageEmoji(results.lineRate);

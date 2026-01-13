@@ -39,10 +39,21 @@ export class ArtifactManager {
    */
   private getArtifactName(
     branchName: string,
-    type: "test" | "coverage" = "test"
+    type: "test" | "coverage" = "test",
+    flags?: string[]
   ): string {
     const sanitized = this.sanitizeBranchName(branchName);
-    return `codecov-${type}-results-${sanitized}`;
+    const baseName = `codecov-${type}-results-${sanitized}`;
+
+    // Add flag suffix if flags are provided
+    if (flags && flags.length > 0) {
+      const flagSuffix = flags
+        .map((f) => this.sanitizeBranchName(f))
+        .join("-");
+      return `${baseName}-${flagSuffix}`;
+    }
+
+    return baseName;
   }
 
   /**
@@ -87,14 +98,22 @@ export class ArtifactManager {
 
   /**
    * Upload coverage results as an artifact
+   * @param results The coverage results to upload
+   * @param branchName The branch name for the artifact
+   * @param flags Optional flags to tag this coverage upload
    */
   async uploadCoverageResults(
     results: AggregatedCoverageResults,
-    branchName: string
+    branchName: string,
+    flags?: string[]
   ): Promise<void> {
     try {
-      const artifactName = this.getArtifactName(branchName, "coverage");
+      const artifactName = this.getArtifactName(branchName, "coverage", flags);
       core.info(`📤 Uploading coverage results as artifact: ${artifactName}`);
+
+      if (flags && flags.length > 0) {
+        core.info(`   Flags: ${flags.join(", ")}`);
+      }
 
       // Create a temporary directory for the artifact
       const tmpDir = fs.mkdtempSync(
@@ -103,6 +122,7 @@ export class ArtifactManager {
       const resultsFile = path.join(tmpDir, "coverage-results.json");
 
       // Write results to file (without the comparison field to avoid circular data)
+      // Include flags and name metadata in the saved results
       const { comparison: _comparison, ...resultsToSave } = results;
       fs.writeFileSync(resultsFile, JSON.stringify(resultsToSave, null, 2));
 
@@ -211,15 +231,34 @@ export class ArtifactManager {
 
   /**
    * Download coverage results from a base branch artifact using GitHub API
+   * @param baseBranch The base branch to download from
+   * @param flags Optional flags to match specific flagged coverage
    */
   async downloadBaseCoverageResults(
-    baseBranch: string
+    baseBranch: string,
+    flags?: string[]
   ): Promise<AggregatedCoverageResults | null> {
     try {
-      const artifactName = this.getArtifactName(baseBranch, "coverage");
-      core.info(
-        `📥 Attempting to download base coverage results: ${artifactName}`
+      // First try to find flagged artifact if flags are provided
+      const flaggedArtifactName = this.getArtifactName(
+        baseBranch,
+        "coverage",
+        flags
       );
+      const unflaggedArtifactName = this.getArtifactName(baseBranch, "coverage");
+
+      const artifactNamesToTry =
+        flags && flags.length > 0
+          ? [flaggedArtifactName, unflaggedArtifactName] // Try flagged first, then unflagged
+          : [unflaggedArtifactName];
+
+      core.info(
+        `📥 Attempting to download base coverage results: ${artifactNamesToTry[0]}`
+      );
+
+      if (flags && flags.length > 0) {
+        core.info(`   Looking for flags: ${flags.join(", ")}`);
+      }
 
       // Find the latest successful workflow run on the base branch
       const workflowRuns =
@@ -247,43 +286,51 @@ export class ArtifactManager {
             run_id: run.id,
           });
 
-        const artifact = artifacts.data.artifacts.find(
-          (a) => a.name === artifactName && !a.expired
-        );
-
-        if (artifact) {
-          core.info(`Found coverage artifact from run #${run.run_number}`);
-
-          // Download the artifact
-          const download = await this.octokit.rest.actions.downloadArtifact({
-            owner: this.owner,
-            repo: this.repo,
-            artifact_id: artifact.id,
-            archive_format: "zip",
-          });
-
-          // Create temp directory and save the zip
-          const tmpDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "codecov-base-coverage-")
+        // Try to find artifact with each name in order of preference
+        for (const artifactName of artifactNamesToTry) {
+          const artifact = artifacts.data.artifacts.find(
+            (a) => a.name === artifactName && !a.expired
           );
-          const zipPath = path.join(tmpDir, "artifact.zip");
 
-          // The download is a buffer, write it to file
-          fs.writeFileSync(zipPath, Buffer.from(download.data as ArrayBuffer));
+          if (artifact) {
+            core.info(
+              `Found coverage artifact '${artifactName}' from run #${run.run_number}`
+            );
 
-          // Extract and read the coverage results
-          const results = this.extractAndReadCoverageResults(zipPath, tmpDir);
+            // Download the artifact
+            const download = await this.octokit.rest.actions.downloadArtifact({
+              owner: this.owner,
+              repo: this.repo,
+              artifact_id: artifact.id,
+              archive_format: "zip",
+            });
 
-          // Clean up
-          fs.unlinkSync(zipPath);
-          fs.rmSync(tmpDir, { recursive: true });
+            // Create temp directory and save the zip
+            const tmpDir = fs.mkdtempSync(
+              path.join(os.tmpdir(), "codecov-base-coverage-")
+            );
+            const zipPath = path.join(tmpDir, "artifact.zip");
 
-          return results;
+            // The download is a buffer, write it to file
+            fs.writeFileSync(
+              zipPath,
+              Buffer.from(download.data as ArrayBuffer)
+            );
+
+            // Extract and read the coverage results
+            const results = this.extractAndReadCoverageResults(zipPath, tmpDir);
+
+            // Clean up
+            fs.unlinkSync(zipPath);
+            fs.rmSync(tmpDir, { recursive: true });
+
+            return results;
+          }
         }
       }
 
       core.info(
-        `ℹ️ No artifact '${artifactName}' found in recent workflow runs`
+        `ℹ️ No artifact '${artifactNamesToTry[0]}' found in recent workflow runs`
       );
       return null;
     } catch (error) {

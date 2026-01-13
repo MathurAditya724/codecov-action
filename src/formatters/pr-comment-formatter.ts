@@ -221,8 +221,27 @@ export class PRCommentFormatter {
     lines: string[],
     results: AggregatedCoverageResults
   ): void {
-    lines.push("## Coverage Report 🎯");
+    // Build header with optional flags
+    if (results.flags && results.flags.length > 0) {
+      lines.push(`## Coverage Report 🎯 [${results.flags.join(", ")}]`);
+    } else {
+      lines.push("## Coverage Report 🎯");
+    }
     lines.push("");
+
+    // Show name and flags metadata if present
+    if (results.name || (results.flags && results.flags.length > 0)) {
+      const metaParts: string[] = [];
+      if (results.name) {
+        metaParts.push(`**Name:** ${results.name}`);
+      }
+      if (results.flags && results.flags.length > 0) {
+        const flagBadges = results.flags.map((f) => `\`${f}\``).join(" ");
+        metaParts.push(`**Flags:** ${flagBadges}`);
+      }
+      lines.push(metaParts.join(" | "));
+      lines.push("");
+    }
 
     // Coverage summary
     const lineEmoji = this.getCoverageEmoji(results.lineRate);

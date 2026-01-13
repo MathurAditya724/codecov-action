@@ -11,3 +11,5 @@ report.junit.xml
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+.pnpm-store

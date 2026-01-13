@@ -50,6 +50,9 @@ export interface AggregatedCoverageResults {
   branchRate: number; // Percentage
   files: FileCoverage[];
   comparison?: CoverageComparison;
+  // Flag metadata for categorizing coverage
+  flags?: string[];
+  name?: string;
 }
 
 export interface FileComparison {
