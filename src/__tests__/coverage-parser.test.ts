@@ -27,7 +27,7 @@ describe("CoverageParser", () => {
 
   it("should parse Clover XML correctly", async () => {
     const parser = new CoverageParser();
-    const result = await parser.parseXML(sampleCloverXML);
+    const result = await parser.parseContent(sampleCloverXML);
 
     expect(result.timestamp).toBe(1764746556005);
     expect(result.metrics.statements).toBe(10);
@@ -42,7 +42,7 @@ describe("CoverageParser", () => {
 
   it("should parse files correctly", async () => {
     const parser = new CoverageParser();
-    const result = await parser.parseXML(sampleCloverXML);
+    const result = await parser.parseContent(sampleCloverXML);
 
     expect(result.files).toHaveLength(2);
 
@@ -60,7 +60,7 @@ describe("CoverageParser", () => {
 
   it("should parse line coverage correctly", async () => {
     const parser = new CoverageParser();
-    const result = await parser.parseXML(sampleCloverXML);
+    const result = await parser.parseContent(sampleCloverXML);
 
     const mathFile = result.files[0];
     const firstLine = mathFile.lines[0];
@@ -78,7 +78,7 @@ describe("CoverageParser", () => {
 
   it("should aggregate multiple coverage results", async () => {
     const parser = new CoverageParser();
-    const result1 = await parser.parseXML(sampleCloverXML);
+    const result1 = await parser.parseContent(sampleCloverXML);
 
     const sampleCloverXML2 = `<?xml version="1.0" encoding="UTF-8"?>
 <coverage generated="1764746556005" clover="3.2.0">
@@ -95,7 +95,7 @@ describe("CoverageParser", () => {
   </project>
 </coverage>`;
 
-    const result2 = await parser.parseXML(sampleCloverXML2);
+    const result2 = await parser.parseContent(sampleCloverXML2);
 
     const aggregated = CoverageParser.aggregateResults([result1, result2]);
 
@@ -125,7 +125,7 @@ describe("CoverageParser", () => {
 </coverage>`;
 
     const parser = new CoverageParser();
-    const result = await parser.parseXML(xmlWithNoConditionals);
+    const result = await parser.parseContent(xmlWithNoConditionals);
 
     expect(result.metrics.lineRate).toBe(100);
     expect(result.metrics.branchRate).toBe(0); // No branches to cover
@@ -148,7 +148,7 @@ describe("CoverageParser", () => {
 </coverage>`;
 
     const parser = new CoverageParser();
-    const result = await parser.parseXML(xmlWithZeroCoverage);
+    const result = await parser.parseContent(xmlWithZeroCoverage);
 
     expect(result.metrics.lineRate).toBe(0);
     expect(result.metrics.branchRate).toBe(0);

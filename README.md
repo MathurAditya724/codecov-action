@@ -1,5 +1,15 @@
 # Codecov Action
 
+A GitHub Action for test results and code coverage reporting with **multi-format support**. Works with 30+ languages including JavaScript/TypeScript, Python, Java, Go, Ruby, C/C++, and more.
+
+## Features
+
+- **Multi-format support**: Auto-detects Clover, Cobertura, JaCoCo, LCOV, Istanbul JSON, and Go coverage formats
+- **No external service required**: Uses GitHub Artifacts for storage and comparison
+- **PR comments**: Optional coverage diff comments on pull requests
+- **Coverage gates**: Use outputs to enforce coverage thresholds
+- **Codecov-style configuration**: Familiar API for easy migration
+
 ## Quick Start
 
 ```yaml
@@ -25,17 +35,59 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+## Supported Coverage Formats
+
+| Format | File Patterns | Languages/Tools |
+|--------|--------------|-----------------|
+| **Clover XML** | `clover.xml` | Istanbul/NYC (JS/TS), PHPUnit, OpenClover |
+| **Cobertura XML** | `coverage.xml`, `cobertura.xml` | coverage.py (Python), Coverlet (.NET), Java |
+| **JaCoCo XML** | `jacoco.xml` | Java, Kotlin, Scala |
+| **LCOV** | `lcov.info`, `*.lcov` | c8, lcov (C/C++), grcov (Rust), gcov |
+| **Istanbul JSON** | `coverage-final.json` | Jest, Vitest, NYC (JS/TS) |
+| **Go Coverage** | `coverage.out`, `cover.out` | `go test -coverprofile` |
+
 ## Inputs
+
+### Core Inputs
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `token` | GitHub token for API access and artifact storage | **Yes** | — |
-| `junit-xml-pattern` | Glob pattern for finding JUnit XML test result files | No | `./**/*.junit.xml` |
-| `coverage-xml-pattern` | Glob pattern for finding Clover XML coverage files | No | `./**/clover.xml` |
+| `token` | GitHub token for API access and artifacts | **Yes** | — |
 | `base-branch` | Base branch to compare results against | No | `main` |
 | `enable-tests` | Enable test results reporting | No | `true` |
 | `enable-coverage` | Enable coverage reporting | No | `true` |
-| `post-pr-comment` | Post results as a PR comment (in addition to Job Summary) | No | `false` |
+| `post-pr-comment` | Post results as a PR comment | No | `false` |
+
+### Coverage File Discovery (Codecov-style)
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `files` | Comma-separated list of coverage files | No | — |
+| `directory` | Folder to search for coverage files | No | `.` |
+| `exclude` | Comma-separated patterns to exclude | No | — |
+| `coverage-format` | Format hint: `auto`, `clover`, `cobertura`, `jacoco`, `lcov`, `istanbul`, `go` | No | `auto` |
+| `disable-search` | Disable auto-search, use only explicit `files` | No | `false` |
+
+### Behavior Flags (Codecov-style)
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `fail-ci-if-error` | Exit with non-zero code on failure | No | `false` |
+| `handle-no-reports-found` | Don't fail if no coverage found | No | `false` |
+| `verbose` | Enable verbose logging | No | `false` |
+
+### Grouping & Identification
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `flags` | Comma-separated flags to tag coverage (e.g., `unittests,frontend`) | No | — |
+| `name` | Custom name for this coverage upload | No | — |
+
+### Test Results
+
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `junit-xml-pattern` | Glob pattern for JUnit XML files | No | `./**/*.junit.xml` |
 
 ## Outputs
 
@@ -47,10 +99,10 @@ jobs:
 | `passed-tests` | Number of passed tests |
 | `failed-tests` | Number of failed tests |
 | `test-pass-rate` | Percentage of tests that passed |
-| `tests-added` | Number of tests added compared to base branch |
-| `tests-removed` | Number of tests removed compared to base branch |
-| `tests-fixed` | Number of tests that changed from failing to passing |
-| `tests-broken` | Number of tests that changed from passing to failing |
+| `tests-added` | Tests added compared to base branch |
+| `tests-removed` | Tests removed compared to base branch |
+| `tests-fixed` | Tests changed from failing to passing |
+| `tests-broken` | Tests changed from passing to failing |
 
 ### Coverage Outputs
 
@@ -58,13 +110,14 @@ jobs:
 |--------|-------------|
 | `line-coverage` | Line coverage percentage |
 | `branch-coverage` | Branch coverage percentage |
-| `coverage-change` | Change in line coverage compared to base branch |
-| `branch-coverage-change` | Change in branch coverage compared to base branch |
-| `coverage-improved` | Whether coverage improved compared to base branch (`true`/`false`) |
+| `coverage-change` | Change in line coverage vs base branch |
+| `branch-coverage-change` | Change in branch coverage vs base branch |
+| `coverage-improved` | Whether coverage improved (`true`/`false`) |
+| `coverage-format` | The detected/used coverage format |
 
 ## Usage Examples
 
-### Basic Usage (Tests + Coverage)
+### Basic Usage (Auto-detect)
 
 ```yaml
 - name: Codecov Action
@@ -73,41 +126,98 @@ jobs:
     token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Coverage Only
-
-```yaml
-- name: Coverage Report
-  uses: mathuraditya724/codecov-action@v1
-  with:
-    token: ${{ secrets.GITHUB_TOKEN }}
-    enable-tests: false
-    enable-coverage: true
-```
-
-### Tests Only with PR Comments
-
-```yaml
-- name: Test Results
-  uses: mathuraditya724/codecov-action@v1
-  with:
-    token: ${{ secrets.GITHUB_TOKEN }}
-    enable-tests: true
-    enable-coverage: false
-    post-pr-comment: true
-```
-
-### Custom File Patterns
+### Explicit Files (Codecov-style)
 
 ```yaml
 - name: Codecov Action
   uses: mathuraditya724/codecov-action@v1
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
-    junit-xml-pattern: './test-results/**/*.xml'
-    coverage-xml-pattern: './coverage/clover.xml'
+    files: ./coverage/lcov.info,./backend/coverage.xml
+    disable-search: true
+    flags: unittests
+    name: my-coverage
+    verbose: true
 ```
 
-### Using Outputs for Coverage Gate
+### Python with Cobertura
+
+```yaml
+- name: Run tests
+  run: pytest --cov=src --cov-report=xml
+
+- name: Codecov Action
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    directory: ./
+    coverage-format: cobertura
+    fail-ci-if-error: true
+```
+
+### Java with JaCoCo
+
+```yaml
+- name: Build and test
+  run: ./gradlew test jacocoTestReport
+
+- name: Codecov Action
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    files: ./build/reports/jacoco/test/jacocoTestReport.xml
+    coverage-format: jacoco
+```
+
+### Go Coverage
+
+```yaml
+- name: Run tests
+  run: go test -coverprofile=coverage.out ./...
+
+- name: Codecov Action
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    files: ./coverage.out
+    coverage-format: go
+```
+
+### JavaScript/TypeScript with LCOV
+
+```yaml
+- name: Run tests
+  run: npm test -- --coverage --coverageReporters=lcov
+
+- name: Codecov Action
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    directory: ./coverage
+    coverage-format: lcov
+```
+
+### Monorepo with Flags
+
+```yaml
+- name: Frontend Coverage
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    directory: ./frontend/coverage
+    flags: frontend
+    name: frontend-coverage
+
+- name: Backend Coverage
+  uses: mathuraditya724/codecov-action@v1
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    directory: ./backend/coverage
+    flags: backend
+    name: backend-coverage
+```
+
+### Coverage Gate with Threshold
 
 ```yaml
 - name: Codecov Action
@@ -130,65 +240,48 @@ jobs:
     exit 1
 ```
 
-### Compare Against Different Base Branch
-
-```yaml
-- name: Codecov Action
-  uses: mathuraditya724/codecov-action@v1
-  with:
-    token: ${{ secrets.GITHUB_TOKEN }}
-    base-branch: develop
-```
-
 ## How It Works
 
 ### 1. File Discovery
 
-The action searches for test result and coverage files using the configured glob patterns:
-
-- **JUnit XML** files for test results (default: `./**/*.junit.xml`)
-- **Clover XML** files for coverage data (default: `./**/clover.xml`)
+The action searches for coverage files using:
+- **Explicit files**: If `files` input is provided
+- **Auto-discovery**: Searches `directory` for known coverage file patterns
+- **Format detection**: Auto-detects format from file content
 
 ### 2. Parsing & Aggregation
 
-Multiple files matching the patterns are parsed and aggregated into unified results:
-
-- Test results include pass/fail counts, execution time, and failure details
-- Coverage results include line, branch, and method coverage percentages
+Multiple coverage files are parsed and aggregated:
+- Supports mixing formats (e.g., frontend LCOV + backend Cobertura)
+- Calculates unified line, branch, and method coverage
 
 ### 3. Artifact Storage
 
-Results are uploaded as GitHub Artifacts with branch-specific naming:
-
-- `test-results-{branch}` — Aggregated test results
+Results are stored as GitHub Artifacts:
 - `coverage-results-{branch}` — Aggregated coverage data
-
-This enables comparison across workflow runs without any external service.
+- `test-results-{branch}` — Aggregated test results
 
 ### 4. Base Branch Comparison
 
-When running on a PR or feature branch:
-
-1. The action downloads the latest results artifact from the base branch
-2. Compares current results against the baseline
-3. Calculates deltas (tests added/removed/fixed/broken, coverage changes)
+On PRs or feature branches:
+1. Downloads latest results from base branch
+2. Compares current vs baseline
+3. Calculates deltas
 
 ### 5. Reporting
 
-Results are displayed in two ways:
+- **Job Summary**: Always generated in Actions UI
+- **PR Comment**: Optional detailed comment on PRs
 
-- **Job Summary** — Always generated, visible in the Actions run UI
-- **PR Comment** — Optional, posts/updates a comment on the pull request
+## Test Results
 
-## Supported Formats
-
-### Test Results
+### Supported Format
 
 | Format | Typical File | Common Test Frameworks |
 |--------|--------------|----------------------|
-| JUnit XML | `*.junit.xml`, `junit.xml` | Jest, Vitest, Mocha, pytest, JUnit, NUnit, PHPUnit |
+| JUnit XML | `*.junit.xml` | Jest, Vitest, Mocha, pytest, JUnit, NUnit, PHPUnit |
 
-Most test frameworks support JUnit XML output. Example configurations:
+### Configuration Examples
 
 **Jest / Vitest:**
 ```json
@@ -202,73 +295,47 @@ Most test frameworks support JUnit XML output. Example configurations:
 pytest --junitxml=report.junit.xml
 ```
 
-### Coverage
+## Coverage Configuration Examples
 
-| Format | Typical File | Common Coverage Tools |
-|--------|--------------|----------------------|
-| Clover XML | `clover.xml` | Istanbul/NYC (JS/TS), PHPUnit, OpenClover |
+### JavaScript/TypeScript (Jest/Vitest)
 
-**Jest / Vitest with Istanbul:**
 ```json
 {
-  "coverageReporters": ["clover", "text"]
+  "coverageReporters": ["lcov", "clover", "json"]
 }
 ```
 
-## Report Examples
+### Python (pytest-cov)
 
-### Job Summary
+```bash
+pytest --cov=src --cov-report=xml  # Cobertura format
+```
 
-The Job Summary appears in the GitHub Actions UI and includes:
+### Java (Gradle + JaCoCo)
 
-- **Test Results** — Total/passed/failed/skipped counts with pass rate
-- **Coverage Report** — Line, branch, and method coverage percentages
-- **Comparison Data** — Changes from base branch (if available)
-- **Failed Tests** — Detailed failure information with stack traces
-- **Low Coverage Files** — Files with coverage below 50%
+```groovy
+jacocoTestReport {
+    reports {
+        xml.required = true
+    }
+}
+```
 
-### PR Comment
+### Go
 
-When `post-pr-comment: true` is set, a comment is posted/updated on the PR:
+```bash
+go test -coverprofile=coverage.out ./...
+```
 
-```markdown
-## Codecov Action Results 📊
+### .NET (Coverlet)
 
-## Test Results 🧪
-
-✅ **42 passed** | ❌ **2 failed** | ⏭️ **1 skipped** | **Total: 45** | **Pass Rate: 93.33%**
-
-⏱️ **Execution Time:** 12.34s
-
-### 📊 Comparison with Base Branch
-
-| Metric | Change |
-|--------|--------|
-| Total Tests | 📈 +5 |
-| Passed Tests | 📈 +3 |
-| Failed Tests | 📉 -1 |
-
-## Coverage Report 🎯
-
-| Metric | Coverage | Covered/Total |
-|--------|----------|---------------|
-| 🟢 **Line Coverage** | **85.2%** | 1024/1202 |
-| 🟡 **Branch Coverage** | **72.5%** | 145/200 |
-| 🔧 **Method Coverage** | **90.1%** | 82/91 |
-
-### 📊 Coverage Change from Base Branch
-
-#### 📈 Coverage Improved!
-
-| Metric | Change |
-|--------|--------|
-| Line Coverage | +2.30% |
-| Branch Coverage | +1.50% |
+```bash
+dotnet test --collect:"XPlat Code Coverage"
+# or
+dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura
 ```
 
 ## Permissions
-
-The action requires the following permissions:
 
 ```yaml
 permissions:
@@ -276,3 +343,18 @@ permissions:
   actions: read         # Read workflow runs and artifacts
   pull-requests: write  # Post PR comments (if enabled)
 ```
+
+## Migration from Codecov
+
+If you're migrating from the official Codecov action:
+
+| Codecov Input | This Action |
+|---------------|-------------|
+| `files` | `files` |
+| `directory` | `directory` |
+| `flags` | `flags` |
+| `name` | `name` |
+| `fail_ci_if_error` | `fail-ci-if-error` |
+| `verbose` | `verbose` |
+
+**Note**: This action doesn't require a Codecov token—it uses GitHub's native artifacts for storage.

@@ -1,22 +1,67 @@
 name: Codecov Action
-description: Test results and coverage reporting for GitHub Actions
+description: Test results and coverage reporting for GitHub Actions with multi-format support
 
 inputs:
-  junit-xml-pattern:
-    description: Glob pattern for finding JUnit XML files
-    required: false
-    default: './**/*.junit.xml'
-  coverage-xml-pattern:
-    description: Glob pattern for finding Coverage XML files (Clover format)
-    required: false
-    default: './**/clover.xml'
+  # Authentication
   token:
     description: GitHub token for API access and artifacts
     required: true
+
+  # Coverage file discovery (Codecov-style)
+  files:
+    description: Comma-separated explicit list of coverage files to process
+    required: false
+  directory:
+    description: Folder to search for coverage files. Defaults to current working directory
+    required: false
+    default: '.'
+  exclude:
+    description: Comma-separated list of folders/patterns to exclude from search
+    required: false
+
+  # Format handling
+  coverage-format:
+    description: 'Coverage format hint (auto, clover, cobertura, jacoco, lcov, istanbul, go). Auto-detects if not specified'
+    required: false
+    default: 'auto'
+  disable-search:
+    description: Disable automatic search for coverage files. Use with "files" input
+    required: false
+    default: 'false'
+
+  # Behavior flags (Codecov-style)
+  fail-ci-if-error:
+    description: Exit with non-zero code if coverage processing fails
+    required: false
+    default: 'false'
+  handle-no-reports-found:
+    description: Do not fail if no coverage reports are found
+    required: false
+    default: 'false'
+  verbose:
+    description: Enable verbose logging for debugging
+    required: false
+    default: 'false'
+
+  # Grouping and identification (Codecov-style)
+  flags:
+    description: Comma-separated list of flags to tag this coverage upload (e.g., unittests, frontend)
+    required: false
+  name:
+    description: Custom name for this coverage upload. Visible in reports
+    required: false
+
+  # Comparison settings
   base-branch:
     description: Base branch to compare results against
     required: false
     default: 'main'
+
+  # Test results
+  junit-xml-pattern:
+    description: Glob pattern for finding JUnit XML files
+    required: false
+    default: './**/*.junit.xml'
   enable-tests:
     description: Enable test results reporting
     required: false
@@ -29,6 +74,12 @@ inputs:
     description: Post results as a PR comment (in addition to Job Summary)
     required: false
     default: 'false'
+
+  # Legacy input (deprecated, use 'files' or 'directory' instead)
+  coverage-xml-pattern:
+    description: '[Deprecated] Glob pattern for finding coverage XML files. Use files/directory instead.'
+    required: false
+    deprecationMessage: 'Use "files" or "directory" inputs instead for better multi-format support'
 
 outputs:
   # Test outputs
@@ -60,6 +111,8 @@ outputs:
     description: Change in branch coverage compared to base branch
   coverage-improved:
     description: Whether coverage improved compared to base branch (true/false)
+  coverage-format:
+    description: The detected or specified coverage format used
 
 runs:
   using: node20
