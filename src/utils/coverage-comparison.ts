@@ -6,6 +6,15 @@ import type {
 } from "../types/coverage.js";
 
 /**
+ * Compare options for additional metadata
+ */
+export interface CompareOptions {
+  baseBranch?: string;
+  headCommit?: string;
+  baseCommit?: string;
+}
+
+/**
  * Compares coverage results between base and current branches
  */
 export class CoverageComparator {
@@ -14,7 +23,8 @@ export class CoverageComparator {
    */
   static compareResults(
     baseResults: AggregatedCoverageResults,
-    currentResults: AggregatedCoverageResults
+    currentResults: AggregatedCoverageResults,
+    options?: CompareOptions
   ): CoverageComparison {
     // Build file maps for easy lookup
     const baseFileMap = new Map<string, FileCoverage>();
@@ -79,10 +89,24 @@ export class CoverageComparator {
     const deltaCoveredMethods =
       currentResults.coveredMethods - baseResults.coveredMethods;
 
+    // Calculate detailed delta metrics
+    const deltaFiles =
+      (currentResults.totalFiles || currentResults.files.length) -
+      (baseResults.totalFiles || baseResults.files.length);
+    const deltaLines =
+      (currentResults.totalLines || 0) - (baseResults.totalLines || 0);
+    const deltaBranches =
+      (currentResults.totalBranches || 0) - (baseResults.totalBranches || 0);
+    const deltaHits =
+      (currentResults.totalHits || 0) - (baseResults.totalHits || 0);
+    const deltaMisses =
+      (currentResults.totalMisses || 0) - (baseResults.totalMisses || 0);
+    const deltaPartials =
+      (currentResults.totalPartials || 0) - (baseResults.totalPartials || 0);
+
     // Determine if overall coverage improved
     const improvement =
-      deltaLineRate > 0 ||
-      (deltaLineRate === 0 && deltaBranchRate > 0);
+      deltaLineRate > 0 || (deltaLineRate === 0 && deltaBranchRate > 0);
 
     return {
       filesAdded,
@@ -97,6 +121,31 @@ export class CoverageComparator {
       deltaTotalMethods,
       deltaCoveredMethods,
       improvement,
+      // Detailed comparison metrics
+      deltaFiles,
+      deltaLines,
+      deltaBranches,
+      deltaHits,
+      deltaMisses,
+      deltaPartials,
+      // Reference info
+      baseBranch: options?.baseBranch,
+      headCommit: options?.headCommit,
+      baseCommit: options?.baseCommit,
+      // Base metrics for diff table
+      baseFiles: baseResults.totalFiles || baseResults.files.length,
+      baseLines: baseResults.totalLines || 0,
+      baseBranches: baseResults.totalBranches || 0,
+      baseHits: baseResults.totalHits || 0,
+      baseMisses: baseResults.totalMisses || 0,
+      basePartials: baseResults.totalPartials || 0,
+      // Current metrics for diff table
+      currentFiles: currentResults.totalFiles || currentResults.files.length,
+      currentLines: currentResults.totalLines || 0,
+      currentBranches: currentResults.totalBranches || 0,
+      currentHits: currentResults.totalHits || 0,
+      currentMisses: currentResults.totalMisses || 0,
+      currentPartials: currentResults.totalPartials || 0,
     };
   }
 
@@ -126,6 +175,8 @@ export class CoverageComparator {
       deltaConditionals: currentFile.conditionals - baseFile.conditionals,
       deltaCoveredConditionals:
         currentFile.coveredConditionals - baseFile.coveredConditionals,
+      missingLines: currentFile.missingLines?.length || 0,
+      partialLines: currentFile.partialLines?.length || 0,
     };
   }
 

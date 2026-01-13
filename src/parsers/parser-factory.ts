@@ -179,6 +179,13 @@ export class CoverageParserFactory {
     let totalMethods = 0;
     let coveredMethods = 0;
 
+    // Detailed metrics for reporting
+    let totalHits = 0;
+    let totalMisses = 0;
+    let totalPartials = 0;
+    let totalBranches = 0;
+    let totalLines = 0;
+
     const allFiles: FileCoverage[] = [];
 
     for (const result of results) {
@@ -189,7 +196,28 @@ export class CoverageParserFactory {
       totalMethods += result.metrics.methods;
       coveredMethods += result.metrics.coveredMethods;
 
-      allFiles.push(...result.files);
+      // Aggregate file-level detailed metrics
+      for (const file of result.files) {
+        allFiles.push(file);
+
+        // Count hits and misses from line data
+        for (const line of file.lines) {
+          totalLines++;
+          if (line.count > 0) {
+            totalHits++;
+          } else {
+            totalMisses++;
+          }
+        }
+
+        // Count partials from file's partialLines
+        if (file.partialLines) {
+          totalPartials += file.partialLines.length;
+        }
+
+        // Count branches
+        totalBranches += file.conditionals;
+      }
     }
 
     const lineRate =
@@ -215,6 +243,13 @@ export class CoverageParserFactory {
       lineRate,
       branchRate,
       files: allFiles,
+      // Detailed metrics
+      totalHits,
+      totalMisses,
+      totalPartials,
+      totalBranches,
+      totalFiles: allFiles.length,
+      totalLines,
     };
   }
 }
