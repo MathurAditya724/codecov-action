@@ -64,6 +64,7 @@ export interface AggregatedCoverageResults {
   totalBranches?: number; // Total branch count
   totalFiles?: number; // Total number of files
   totalLines?: number; // Total number of lines tracked
+  patchCoverageRate?: number; // Patch coverage percentage (changed lines only)
 }
 
 export interface FileComparison {
@@ -123,4 +124,3 @@ export interface CoverageComparison {
   currentMisses?: number;
   currentPartials?: number;
 }
-

@@ -1,6 +1,6 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { PRCommentFormatter } from "../formatters/pr-comment-formatter.js";
+import { ReportFormatter } from "../formatters/report-formatter.js";
 
 export class GitHubClient {
   private octokit: ReturnType<typeof github.getOctokit>;
@@ -47,7 +47,7 @@ export class GitHubClient {
     }
 
     const { owner, repo } = this.context.repo;
-    const identifier = PRCommentFormatter.getCommentIdentifier();
+    const identifier = ReportFormatter.getCommentIdentifier();
 
     try {
       // Find existing comment
@@ -58,7 +58,7 @@ export class GitHubClient {
       });
 
       // Check for both new and legacy identifiers for backward compatibility
-      const legacyIdentifier = PRCommentFormatter.getLegacyCommentIdentifier();
+      const legacyIdentifier = ReportFormatter.getLegacyCommentIdentifier();
       const existingComment = comments.find(
         (comment) =>
           comment.body?.includes(identifier) ||

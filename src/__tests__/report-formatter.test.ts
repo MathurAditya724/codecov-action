@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { PRCommentFormatter } from "../formatters/pr-comment-formatter.js";
+import { ReportFormatter } from "../formatters/report-formatter.js";
 import type { AggregatedTestResults } from "../types/test-results.js";
 
-describe("PRCommentFormatter", () => {
-  const formatter = new PRCommentFormatter();
+describe("ReportFormatter", () => {
+  const formatter = new ReportFormatter();
 
   it("should format results with all passing tests", () => {
     const results: AggregatedTestResults = {
@@ -16,7 +16,7 @@ describe("PRCommentFormatter", () => {
       failedTestCases: [],
     };
 
-    const comment = formatter.formatComment(results);
+    const comment = formatter.formatReport(results);
 
     expect(comment).toContain("## Test Results 🧪");
     expect(comment).toContain("✅ **10 passed**");
@@ -62,7 +62,7 @@ describe("PRCommentFormatter", () => {
       ],
     };
 
-    const comment = formatter.formatComment(results);
+    const comment = formatter.formatReport(results);
 
     expect(comment).toContain("## Test Results 🧪");
     expect(comment).toContain("✅ **3 passed**");
@@ -102,7 +102,7 @@ describe("PRCommentFormatter", () => {
       ],
     };
 
-    const comment = formatter.formatComment(results);
+    const comment = formatter.formatReport(results);
 
     expect(comment).toContain("✅ **5 passed**");
     expect(comment).toContain("❌ **1 failed**");
@@ -123,7 +123,7 @@ describe("PRCommentFormatter", () => {
       failedTestCases: [],
     };
 
-    let comment = formatter.formatComment(results);
+    let comment = formatter.formatReport(results);
     expect(comment).toContain("234ms");
 
     // Seconds
@@ -131,7 +131,7 @@ describe("PRCommentFormatter", () => {
       ...results,
       totalTime: 5.67,
     };
-    comment = formatter.formatComment(results);
+    comment = formatter.formatReport(results);
     expect(comment).toContain("5.67s");
 
     // Minutes and seconds
@@ -139,7 +139,7 @@ describe("PRCommentFormatter", () => {
       ...results,
       totalTime: 125.4,
     };
-    comment = formatter.formatComment(results);
+    comment = formatter.formatReport(results);
     expect(comment).toContain("2m 5s");
   });
 
@@ -147,7 +147,7 @@ describe("PRCommentFormatter", () => {
     const comment = "Test comment";
     const withIdentifier = formatter.addIdentifier(comment);
 
-    expect(withIdentifier).toContain(PRCommentFormatter.getCommentIdentifier());
+    expect(withIdentifier).toContain(ReportFormatter.getCommentIdentifier());
     expect(withIdentifier).toContain("Test comment");
   });
 
@@ -174,7 +174,7 @@ describe("PRCommentFormatter", () => {
       ],
     };
 
-    const comment = formatter.formatComment(results);
+    const comment = formatter.formatReport(results);
 
     expect(comment).toContain("**Error:** Simple failure");
     // Should not have details section for stack trace

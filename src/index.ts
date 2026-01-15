@@ -5,7 +5,7 @@ import * as glob from "@actions/glob";
 import { PatchAnalyzer } from "./analyzers/patch-analyzer.js";
 import { ThresholdChecker } from "./analyzers/threshold-checker.js";
 import { ConfigLoader } from "./config/config-loader.js";
-import { PRCommentFormatter } from "./formatters/pr-comment-formatter.js";
+import { ReportFormatter } from "./formatters/report-formatter.js";
 import { JUnitParser } from "./parsers/junit-parser.js";
 import {
   type CoverageFormat,
@@ -20,7 +20,6 @@ import { TestResultsComparator } from "./utils/comparison.js";
 import { CoverageComparator } from "./utils/coverage-comparison.js";
 import { FileFinder } from "./utils/file-finder.js";
 import { GitHubClient } from "./utils/github-client.js";
-import { writeJobSummary } from "./utils/summary-writer.js";
 
 /**
  * Coverage input configuration
@@ -236,14 +235,8 @@ async function run() {
             );
 
             // Enrich aggregated results with patch coverage for the formatter
-            // (Wait, we need to update AggregatedCoverageResults type or pass it separately)
-            // For now, let's update the files in aggregatedCoverageResults with their specific patch stats
-            // The analyzer already returns a breakdown which we can use
-
-            // Update the results with patch info for the formatter to use
-            // This is a bit of a hack until we update the types officially,
-            // but the formatter currently looks at file.missingLines which is generic.
-            // We should ideally pass the patch stats to the formatter separately.
+            aggregatedCoverageResults.patchCoverageRate =
+              patchCoverage.percentage;
           } catch (error) {
             core.warning(`Failed to calculate patch coverage: ${error}`);
           }
@@ -296,7 +289,7 @@ async function run() {
         };
 
         // If we have real patch coverage data, use it for the check
-        let patchStatus;
+        let patchStatus: { status: "success" | "failure"; description: string };
         if (patchCoverage) {
           // Create a temporary object that matches what checkPatchStatus expects
           // or update checkPatchStatus to accept PatchCoverageResults
@@ -326,23 +319,21 @@ async function run() {
       }
     }
 
-    // Write Job Summary (always)
-    core.info("📝 Writing Job Summary...");
-    await writeJobSummary(
+    // Generate report using the formatter
+    const formatter = new ReportFormatter();
+    const reportBody = formatter.formatReport(
       aggregatedTestResults || undefined,
       aggregatedCoverageResults || undefined
     );
 
+    // Write Job Summary (always)
+    core.info("📝 Writing Job Summary...");
+    await core.summary.addRaw(reportBody).write();
+
     // Optionally post PR comment if enabled and in PR context
     if (postPrComment && githubClient.isPullRequest()) {
-      const formatter = new PRCommentFormatter();
-      const commentBody = formatter.formatComment(
-        aggregatedTestResults || undefined,
-        aggregatedCoverageResults || undefined
-      );
-
       core.info("📝 Posting results to PR comment...");
-      await githubClient.postOrUpdateComment(commentBody);
+      await githubClient.postOrUpdateComment(reportBody);
     }
 
     core.info("✅ Codecov Action completed successfully!");

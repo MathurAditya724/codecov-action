@@ -7,11 +7,11 @@ import type {
   TestComparison,
 } from "../types/test-results.js";
 
-export class PRCommentFormatter {
+export class ReportFormatter {
   /**
-   * Format test results and coverage as a markdown comment for PRs
+   * Format test results and coverage as a markdown report
    */
-  formatComment(
+  formatReport(
     testResults?: AggregatedTestResults,
     coverageResults?: AggregatedCoverageResults
   ): string {
@@ -39,14 +39,10 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Format only test results as a markdown comment for PRs (backward compatibility)
+   * Format only test results as a markdown report (backward compatibility)
    */
-  formatTestComment(results: AggregatedTestResults): string {
+  formatTestReport(results: AggregatedTestResults): string {
     const lines: string[] = [];
-
-    // Header
-    lines.push("## Test Results 🧪");
-    lines.push("");
 
     // Summary line with emoji indicators
     const passEmoji = results.passedTests > 0 ? "✅" : "";
@@ -68,12 +64,11 @@ export class PRCommentFormatter {
     // Add total and pass rate
     summaryParts.push(`**Total: ${results.totalTests}**`);
     summaryParts.push(`**Pass Rate: ${results.passRate}%**`);
+    summaryParts.push(
+      `⏱️ **Execution Time: ${this.formatTime(results.totalTime)}**`
+    );
 
     lines.push(summaryParts.join(" | "));
-    lines.push("");
-
-    // Execution time
-    lines.push(`⏱️ **Execution Time:** ${this.formatTime(results.totalTime)}`);
     lines.push("");
 
     // Add comparison section if available
@@ -115,9 +110,7 @@ export class PRCommentFormatter {
       }
     } else if (results.failedTests === 0) {
       // Success message
-      lines.push("### ✅ All Tests Passed!");
-      lines.push("");
-      lines.push("Great job! All tests are passing successfully.");
+      lines.push("All tests are passing successfully.");
       lines.push("");
     }
 
@@ -129,7 +122,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add test results section to the comment
+   * Add test results section to the report
    */
   private addTestResultsSection(
     lines: string[],
@@ -215,7 +208,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add coverage section to the comment (Codecov-style format with icons)
+   * Add coverage section to the report (Codecov-style format with icons)
    */
   private addCoverageSection(
     lines: string[],
@@ -223,16 +216,19 @@ export class PRCommentFormatter {
   ): void {
     // Calculate metrics
     const totalMissing = results.totalMisses || 0;
+    // Use explicit patch coverage if available, otherwise fallback to lineRate (legacy/project)
+    const patchRate =
+      results.patchCoverageRate !== undefined
+        ? results.patchCoverageRate.toFixed(2)
+        : results.lineRate.toFixed(2);
 
     // Line 1: Patch coverage with missing lines
     if (totalMissing > 0) {
       lines.push(
-        `:x: Patch coverage is **${results.lineRate}%** with **${totalMissing} lines** missing coverage.`
+        `:x: Patch coverage is **${patchRate}%** with **${totalMissing} lines** missing coverage.`
       );
     } else {
-      lines.push(
-        `:white_check_mark: Patch coverage is **${results.lineRate}%**.`
-      );
+      lines.push(`:white_check_mark: Patch coverage is **${patchRate}%**.`);
     }
 
     // Line 2: Project coverage with comparison info
@@ -636,7 +632,7 @@ export class PRCommentFormatter {
   }
 
   /**
-   * Add comparison section to the comment
+   * Add comparison section to the report
    */
   private addComparisonSection(
     lines: string[],
@@ -737,7 +733,8 @@ export class PRCommentFormatter {
       comparison.testsBroken.length === 0 &&
       comparison.testsFixed.length === 0 &&
       comparison.testsAdded.length === 0 &&
-      comparison.testsRemoved.length === 0
+      comparison.testsRemoved.length === 0 &&
+      comparison.deltaTotal === 0
     ) {
       lines.push("✨ No test changes detected");
       lines.push("");
@@ -821,6 +818,6 @@ export class PRCommentFormatter {
    * Add identifier to comment body
    */
   addIdentifier(comment: string): string {
-    return `${PRCommentFormatter.getCommentIdentifier()}\n${comment}`;
+    return `${ReportFormatter.getCommentIdentifier()}\n${comment}`;
   }
 }
