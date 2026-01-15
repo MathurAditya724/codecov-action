@@ -111,4 +111,51 @@ export class GitHubClient {
       eventName: this.context.eventName,
     };
   }
+
+  /**
+   * Create a commit status check
+   */
+  async createCommitStatus(
+    context: string,
+    state: "success" | "failure" | "pending",
+    description: string,
+    targetUrl?: string
+  ): Promise<void> {
+    const { owner, repo } = this.context.repo;
+    const sha = this.context.sha;
+
+    await this.octokit.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha,
+      state,
+      context,
+      description,
+      target_url: targetUrl,
+    });
+  }
+
+  /**
+   * Get the PR diff content
+   */
+  async getPrDiff(): Promise<string> {
+    const prNumber = this.getPullRequestNumber();
+    if (!prNumber) {
+      throw new Error("Cannot get PR diff: Not a pull request");
+    }
+
+    const { owner, repo } = this.context.repo;
+    const { data } = await this.octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+      mediaType: {
+        format: "diff",
+      },
+    });
+
+    // The type definition for pulls.get doesn't explicitly include string when mediaType is diff,
+    // but the API returns the raw diff string.
+    return data as unknown as string;
+  }
 }

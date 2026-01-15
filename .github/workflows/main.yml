@@ -39,3 +39,4 @@ jobs:
         uses: ./ # TODO: later remove this with the public address
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          post-pr-comment: true

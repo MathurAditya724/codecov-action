@@ -314,9 +314,9 @@ inputs:
     default: 'main'
   
   # Comment
-  comment-on-pr:
+  post-pr-comment:
     description: 'Post coverage comment on PR'
-    default: 'true'
+    default: 'false'
 ```
 
 ### 6.2 Action Outputs

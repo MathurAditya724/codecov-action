@@ -18,7 +18,7 @@ export class PRCommentFormatter {
     const lines: string[] = [];
 
     // Main header
-    lines.push("## Codecov Action Results 📊");
+    lines.push("## Codecov Results 📊");
     lines.push("");
 
     // Add test results section
@@ -221,9 +221,6 @@ export class PRCommentFormatter {
     lines: string[],
     results: AggregatedCoverageResults
   ): void {
-    lines.push("## Coverage Report");
-    lines.push("");
-
     // Calculate metrics
     const totalMissing = results.totalMisses || 0;
 
@@ -272,7 +269,10 @@ export class PRCommentFormatter {
       });
 
     if (filesWithMissing.length > 0) {
-      lines.push("### Files with missing lines");
+      lines.push("<details>");
+      lines.push(
+        `<summary>Files with missing lines (${filesWithMissing.length})</summary>`
+      );
       lines.push("");
       lines.push("| File | Patch % | Lines |");
       lines.push("|------|---------|-------|");
@@ -296,6 +296,8 @@ export class PRCommentFormatter {
         );
       }
 
+      lines.push("");
+      lines.push("</details>");
       lines.push("");
     }
 
