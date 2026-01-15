@@ -29,6 +29,9 @@ importers:
       js-yaml:
         specifier: ^4.1.1
         version: 4.1.1
+      parse-diff:
+        specifier: ^0.11.1
+        version: 0.11.1
       xml2js:
         specifier: ^0.6.2
         version: 0.6.2
@@ -2128,6 +2131,9 @@ packages:
 
   pako@1.0.11:
     resolution: {integrity: sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw==}
+
+  parse-diff@0.11.1:
+    resolution: {integrity: sha512-Oq4j8LAOPOcssanQkIjxosjATBIEJhCxMCxPhMu+Ci4wdNmAEdx0O+a7gzbR2PyKXgKPvRLIN5g224+dJAsKHA==}
 
   path-key@3.1.1:
     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
@@ -4528,6 +4534,8 @@ snapshots:
   package-json-from-dist@1.0.1: {}
 
   pako@1.0.11: {}
+
+  parse-diff@0.11.1: {}
 
   path-key@3.1.1: {}
 
