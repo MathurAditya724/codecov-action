@@ -111,4 +111,27 @@ export class GitHubClient {
       eventName: this.context.eventName,
     };
   }
+
+  /**
+   * Create a commit status check
+   */
+  async createCommitStatus(
+    context: string,
+    state: "success" | "failure" | "pending",
+    description: string,
+    targetUrl?: string
+  ): Promise<void> {
+    const { owner, repo } = this.context.repo;
+    const sha = this.context.sha;
+
+    await this.octokit.rest.repos.createCommitStatus({
+      owner,
+      repo,
+      sha,
+      state,
+      context,
+      description,
+      target_url: targetUrl,
+    });
+  }
 }

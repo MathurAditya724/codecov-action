@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
+import { ThresholdChecker } from "./analyzers/threshold-checker.js";
 import { ConfigLoader } from "./config/config-loader.js";
 import { PRCommentFormatter } from "./formatters/pr-comment-formatter.js";
 import { JUnitParser } from "./parsers/junit-parser.js";
@@ -9,6 +10,7 @@ import {
   type CoverageFormat,
   CoverageParserFactory,
 } from "./parsers/parser-factory.js";
+import { StatusReporter } from "./reporters/status-check.js";
 import type { NormalizedConfig } from "./types/config.js";
 import type { CoverageResults } from "./types/coverage.js";
 import type { TestResults } from "./types/test-results.js";
@@ -35,6 +37,11 @@ interface CoverageConfig {
   name: string;
   // Config from .github/coverage.yml
   status?: NormalizedConfig["status"];
+  // Threshold overrides from inputs
+  failOnError: boolean;
+  targetProject?: number | "auto";
+  thresholdProject?: number;
+  targetPatch?: number;
 }
 
 /**
@@ -65,7 +72,7 @@ async function getCoverageConfig(): Promise<CoverageConfig> {
         .map((e) => e.trim())
         .filter(Boolean)
     : [];
-  
+
   // Merge YAML ignore patterns
   if (yamlConfig.ignore && yamlConfig.ignore.length > 0) {
     exclude.push(...yamlConfig.ignore);
@@ -94,6 +101,24 @@ async function getCoverageConfig(): Promise<CoverageConfig> {
   // Get name
   const name = core.getInput("name") || "";
 
+  // Get threshold inputs
+  const failOnError = core.getBooleanInput("fail-on-error") === true;
+  const targetProjectInput = core.getInput("target-project");
+  const thresholdProjectInput = core.getInput("threshold-project");
+  const targetPatchInput = core.getInput("target-patch");
+
+  // Parse threshold values
+  let targetProject: number | "auto" | undefined;
+  if (targetProjectInput) {
+    targetProject =
+      targetProjectInput === "auto" ? "auto" : Number(targetProjectInput);
+  }
+
+  const thresholdProject = thresholdProjectInput
+    ? Number(thresholdProjectInput)
+    : undefined;
+  const targetPatch = targetPatchInput ? Number(targetPatchInput) : undefined;
+
   return {
     files,
     directory,
@@ -106,6 +131,10 @@ async function getCoverageConfig(): Promise<CoverageConfig> {
     flags,
     name,
     status: yamlConfig.status,
+    failOnError,
+    targetProject,
+    thresholdProject,
+    targetPatch,
   };
 }
 
@@ -173,6 +202,8 @@ async function run() {
 
     // Process coverage if enabled
     let aggregatedCoverageResults = null;
+    let coverageChecksFailed = false;
+
     if (enableCoverage) {
       aggregatedCoverageResults = await processCoverage(
         coverageConfig,
@@ -180,6 +211,70 @@ async function run() {
         currentBranch,
         baseBranch
       );
+
+      // Run threshold checks if coverage results are available
+      if (aggregatedCoverageResults) {
+        // Initialize status reporter
+        const statusReporter = new StatusReporter(token);
+
+        // Determine project config (inputs override YAML)
+        const projectConfig = {
+          target:
+            coverageConfig.targetProject ??
+            coverageConfig.status?.project.target ??
+            "auto",
+          threshold:
+            coverageConfig.thresholdProject ??
+            coverageConfig.status?.project.threshold ??
+            null,
+        };
+
+        // Check project status
+        core.info("🔍 Checking project coverage thresholds...");
+        const projectStatus = ThresholdChecker.checkProjectStatus(
+          aggregatedCoverageResults,
+          projectConfig
+        );
+
+        // Report project status
+        await statusReporter.reportStatus(
+          "codecov/project",
+          projectStatus.status,
+          projectStatus.description
+        );
+
+        if (projectStatus.status === "failure") {
+          core.warning(
+            `❌ Project coverage check failed: ${projectStatus.description}`
+          );
+          coverageChecksFailed = true;
+        } else {
+          core.info(
+            `✅ Project coverage check passed: ${projectStatus.description}`
+          );
+        }
+
+        // Check patch status (placeholder for now)
+        const patchConfig = {
+          target:
+            coverageConfig.targetPatch ??
+            coverageConfig.status?.patch.target ??
+            80,
+          threshold: coverageConfig.status?.patch.threshold ?? null,
+        };
+
+        const patchStatus = ThresholdChecker.checkPatchStatus(
+          aggregatedCoverageResults,
+          patchConfig
+        );
+
+        // Report patch status
+        await statusReporter.reportStatus(
+          "codecov/patch",
+          patchStatus.status,
+          patchStatus.description
+        );
+      }
     }
 
     // Write Job Summary (always)
@@ -202,6 +297,11 @@ async function run() {
     }
 
     core.info("✅ Codecov Action completed successfully!");
+
+    // Fail if thresholds met and fail-on-error is true
+    if (coverageChecksFailed && coverageConfig.failOnError) {
+      throw new Error("Coverage thresholds were not met.");
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     core.setFailed(`Action failed: ${message}`);

@@ -75,6 +75,21 @@ inputs:
     required: false
     default: 'false'
 
+  # Threshold enforcement
+  fail-on-error:
+    description: Fail the CI job if coverage thresholds are not met
+    required: false
+    default: 'false'
+  target-project:
+    description: "Target project coverage % (or 'auto' to use base branch coverage)"
+    required: false
+  threshold-project:
+    description: "Allowed project coverage drop % (only used when target is 'auto')"
+    required: false
+  target-patch:
+    description: "Target patch coverage % for changed lines"
+    required: false
+
   # Legacy input (deprecated, use 'files' or 'directory' instead)
   coverage-xml-pattern:
     description: '[Deprecated] Glob pattern for finding coverage XML files. Use files/directory instead.'
