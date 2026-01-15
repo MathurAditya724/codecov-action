@@ -2,12 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
+import { ConfigLoader } from "./config/config-loader.js";
 import { PRCommentFormatter } from "./formatters/pr-comment-formatter.js";
 import { JUnitParser } from "./parsers/junit-parser.js";
 import {
   type CoverageFormat,
   CoverageParserFactory,
 } from "./parsers/parser-factory.js";
+import type { NormalizedConfig } from "./types/config.js";
 import type { CoverageResults } from "./types/coverage.js";
 import type { TestResults } from "./types/test-results.js";
 import { ArtifactManager } from "./utils/artifact-manager.js";
@@ -31,12 +33,18 @@ interface CoverageConfig {
   verbose: boolean;
   flags: string[];
   name: string;
+  // Config from .github/coverage.yml
+  status?: NormalizedConfig["status"];
 }
 
 /**
- * Parse coverage configuration from action inputs
+ * Parse coverage configuration from action inputs and YAML config
  */
-function getCoverageConfig(): CoverageConfig {
+async function getCoverageConfig(): Promise<CoverageConfig> {
+  // Load YAML config first
+  const configLoader = new ConfigLoader();
+  const yamlConfig = await configLoader.loadConfig();
+
   // Get files input (comma-separated)
   const filesInput = core.getInput("files");
   const files = filesInput
@@ -49,7 +57,7 @@ function getCoverageConfig(): CoverageConfig {
   // Get directory
   const directory = core.getInput("directory") || ".";
 
-  // Get exclude patterns (comma-separated)
+  // Get exclude patterns (comma-separated) and merge with YAML ignore
   const excludeInput = core.getInput("exclude");
   const exclude = excludeInput
     ? excludeInput
@@ -57,6 +65,11 @@ function getCoverageConfig(): CoverageConfig {
         .map((e) => e.trim())
         .filter(Boolean)
     : [];
+  
+  // Merge YAML ignore patterns
+  if (yamlConfig.ignore && yamlConfig.ignore.length > 0) {
+    exclude.push(...yamlConfig.ignore);
+  }
 
   // Get format
   const formatInput = core.getInput("coverage-format") || "auto";
@@ -92,6 +105,7 @@ function getCoverageConfig(): CoverageConfig {
     verbose,
     flags,
     name,
+    status: yamlConfig.status,
   };
 }
 
@@ -116,7 +130,7 @@ async function run() {
     const postPrComment = core.getBooleanInput("post-pr-comment") === true;
 
     // Get coverage config
-    const coverageConfig = getCoverageConfig();
+    const coverageConfig = await getCoverageConfig();
 
     if (!token) {
       throw new Error(
