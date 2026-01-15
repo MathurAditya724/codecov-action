@@ -7,65 +7,61 @@ import type {
 } from "../types/test-results.js";
 
 /**
+ * Generate a unique key for a test case
+ */
+function generateTestKey(
+  suiteName: string,
+  classname: string,
+  testName: string
+): string {
+  return `${suiteName}::${classname}::${testName}`;
+}
+
+/**
+ * Build a map of all tests from aggregated results
+ */
+function buildTestMap(
+  results: AggregatedTestResults
+): Map<
+  string,
+  { identifier: TestIdentifier; testCase: TestCase; isPassing: boolean }
+> {
+  const testMap = new Map();
+
+  // Add all failed tests
+  for (const { suiteName, testCase } of results.failedTestCases) {
+    const key = generateTestKey(suiteName, testCase.classname, testCase.name);
+    testMap.set(key, {
+      identifier: {
+        suiteName,
+        classname: testCase.classname,
+        testName: testCase.name,
+      },
+      testCase,
+      isPassing: false,
+    });
+  }
+
+  // We need to infer passing tests from the total count
+  // This is a limitation - we don't have explicit passing test data in the current structure
+  // For now, we'll only track failed tests and changes in failed tests
+
+  return testMap;
+}
+
+/**
  * Utility class for comparing test results between branches
  */
-export class TestResultsComparator {
-  /**
-   * Generate a unique key for a test case
-   */
-  private static generateTestKey(
-    suiteName: string,
-    classname: string,
-    testName: string
-  ): string {
-    return `${suiteName}::${classname}::${testName}`;
-  }
-
-  /**
-   * Build a map of all tests from aggregated results
-   */
-  private static buildTestMap(
-    results: AggregatedTestResults
-  ): Map<
-    string,
-    { identifier: TestIdentifier; testCase: TestCase; isPassing: boolean }
-  > {
-    const testMap = new Map();
-
-    // Add all failed tests
-    for (const { suiteName, testCase } of results.failedTestCases) {
-      const key = this.generateTestKey(
-        suiteName,
-        testCase.classname,
-        testCase.name
-      );
-      testMap.set(key, {
-        identifier: {
-          suiteName,
-          classname: testCase.classname,
-          testName: testCase.name,
-        },
-        testCase,
-        isPassing: false,
-      });
-    }
-
-    // We need to infer passing tests from the total count
-    // This is a limitation - we don't have explicit passing test data in the current structure
-    // For now, we'll only track failed tests and changes in failed tests
-
-    return testMap;
-  }
-
+export const TestResultsComparator = {
   /**
    * Compare two test result sets and generate a comparison report
    */
-  static compareResults(
+  compareResults(
     baseResults: AggregatedTestResults,
     currentResults: AggregatedTestResults
   ): TestComparison {
-    const baseTestMap = this.buildTestMap(baseResults);
-    const currentTestMap = this.buildTestMap(currentResults);
+    const baseTestMap = buildTestMap(baseResults);
+    const currentTestMap = buildTestMap(currentResults);
 
     const testsAdded: TestChange[] = [];
     const testsRemoved: TestChange[] = [];
@@ -135,12 +131,12 @@ export class TestResultsComparator {
       deltaFailed,
       deltaSkipped,
     };
-  }
+  },
 
   /**
    * Check if there are any significant changes
    */
-  static hasSignificantChanges(comparison: TestComparison): boolean {
+  hasSignificantChanges(comparison: TestComparison): boolean {
     return (
       comparison.testsAdded.length > 0 ||
       comparison.testsRemoved.length > 0 ||
@@ -148,6 +144,5 @@ export class TestResultsComparator {
       comparison.testsFixed.length > 0 ||
       comparison.deltaTotal !== 0
     );
-  }
-}
-
+  },
+};

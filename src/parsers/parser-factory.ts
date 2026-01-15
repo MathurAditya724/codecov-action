@@ -12,33 +12,31 @@ import { IstanbulParser } from "./istanbul-parser.js";
 import { JaCoCoParser } from "./jacoco-parser.js";
 import { LcovParser } from "./lcov-parser.js";
 
+const PARSERS: ICoverageParser[] = [
+  new CloverParser(),
+  new CoberturaParser(),
+  new JaCoCoParser(),
+  new LcovParser(),
+  new IstanbulParser(),
+  new GoParser(),
+];
+
 /**
  * Factory for creating coverage parsers with auto-detection support
  */
-export class CoverageParserFactory {
-  private static parsers: ICoverageParser[] = [
-    new CloverParser(),
-    new CoberturaParser(),
-    new JaCoCoParser(),
-    new LcovParser(),
-    new IstanbulParser(),
-    new GoParser(),
-  ];
-
+export const CoverageParserFactory = {
   /**
    * Get a parser for a specific format
    * @param format The coverage format to use
    * @returns The parser for the specified format
    */
-  static getParser(format: CoverageFormat): ICoverageParser {
-    const parser = CoverageParserFactory.parsers.find(
-      (p) => p.format === format
-    );
+  getParser(format: CoverageFormat): ICoverageParser {
+    const parser = PARSERS.find((p) => p.format === format);
     if (!parser) {
       throw new Error(`Unsupported coverage format: ${format}`);
     }
     return parser;
-  }
+  },
 
   /**
    * Auto-detect the coverage format and return the appropriate parser
@@ -46,12 +44,9 @@ export class CoverageParserFactory {
    * @param filePath Optional file path for extension-based hints
    * @returns The detected parser or null if no match
    */
-  static detectParser(
-    content: string,
-    filePath?: string
-  ): ICoverageParser | null {
+  detectParser(content: string, filePath?: string): ICoverageParser | null {
     // Try each parser in order of specificity (content-based detection)
-    for (const parser of CoverageParserFactory.parsers) {
+    for (const parser of PARSERS) {
       if (parser.canParse(content, filePath)) {
         return parser;
       }
@@ -67,14 +62,14 @@ export class CoverageParserFactory {
     }
 
     return null;
-  }
+  },
 
   /**
    * Auto-detect format from file path (extension-based)
    * @param filePath The file path to analyze
    * @returns The detected format or null
    */
-  static detectFormatFromPath(filePath: string): CoverageFormat | null {
+  detectFormatFromPath(filePath: string): CoverageFormat | null {
     const lowerPath = filePath.toLowerCase();
 
     if (lowerPath.endsWith("clover.xml")) {
@@ -107,7 +102,7 @@ export class CoverageParserFactory {
     }
 
     return null;
-  }
+  },
 
   /**
    * Parse a coverage file with auto-detection or explicit format
@@ -115,13 +110,13 @@ export class CoverageParserFactory {
    * @param format Optional explicit format (uses auto-detection if not provided or 'auto')
    * @returns Parsed coverage results
    */
-  static async parseFile(
+  async parseFile(
     filePath: string,
     format?: CoverageFormat | "auto"
   ): Promise<CoverageResults> {
     const content = await fs.readFile(filePath, "utf-8");
     return CoverageParserFactory.parseContent(content, filePath, format);
-  }
+  },
 
   /**
    * Parse coverage content with auto-detection or explicit format
@@ -130,7 +125,7 @@ export class CoverageParserFactory {
    * @param format Optional explicit format (uses auto-detection if not provided or 'auto')
    * @returns Parsed coverage results
    */
-  static async parseContent(
+  async parseContent(
     content: string,
     filePath?: string,
     format?: CoverageFormat | "auto"
@@ -157,21 +152,19 @@ export class CoverageParserFactory {
     }
 
     return parser.parseContent(content);
-  }
+  },
 
   /**
    * Get list of supported format names
    */
-  static getSupportedFormats(): CoverageFormat[] {
-    return CoverageParserFactory.parsers.map((p) => p.format);
-  }
+  getSupportedFormats(): CoverageFormat[] {
+    return PARSERS.map((p) => p.format);
+  },
 
   /**
    * Aggregate multiple coverage results into a single result
    */
-  static aggregateResults(
-    results: CoverageResults[]
-  ): AggregatedCoverageResults {
+  aggregateResults(results: CoverageResults[]): AggregatedCoverageResults {
     let totalStatements = 0;
     let coveredStatements = 0;
     let totalConditionals = 0;
@@ -251,8 +244,8 @@ export class CoverageParserFactory {
       totalFiles: allFiles.length,
       totalLines,
     };
-  }
-}
+  },
+};
 
 /**
  * Re-export for convenience

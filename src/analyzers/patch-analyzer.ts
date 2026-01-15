@@ -17,22 +17,22 @@ export interface PatchFileCoverage {
   percentage: number;
 }
 
-export class PatchAnalyzer {
+export const PatchAnalyzer = {
   /**
    * Calculate patch coverage by intersecting coverage results with git diff
    */
-  static analyzePatchCoverage(
+  analyzePatchCoverage(
     diffContent: string,
     coverageResults: AggregatedCoverageResults
   ): PatchCoverageResults {
     const diffFiles = parseDiff(diffContent);
     const fileBreakdown: PatchFileCoverage[] = [];
-    
+
     let totalCovered = 0;
     let totalMissed = 0;
 
     // Create a map of normalized file paths from coverage results for faster lookup
-    // Normalize by ensuring paths start with relative root logic if needed, 
+    // Normalize by ensuring paths start with relative root logic if needed,
     // but usually coverage paths are repo-relative (e.g. src/index.ts)
     const coverageMap = new Map(
       coverageResults.files.map((file) => [file.path, file])
@@ -47,8 +47,8 @@ export class PatchAnalyzer {
       // Try to find matching coverage file
       // Diff paths usually strictly relative, coverage paths might vary
       // Simple exact match first
-      let coverageFile = coverageMap.get(diffFile.to);
-      
+      const coverageFile = coverageMap.get(diffFile.to);
+
       // If not found, try to be more fuzzy if needed, but exact match is safest for now
       // Assuming coverage paths are normalized to repo root
       if (!coverageFile) {
@@ -64,7 +64,7 @@ export class PatchAnalyzer {
           // We only care about added lines
           if (change.type === "add") {
             const lineNumber = change.ln;
-            
+
             // Check if this line exists in coverage data
             const lineCoverage = coverageFile.lines.find(
               (l) => l.lineNumber === lineNumber
@@ -93,7 +93,7 @@ export class PatchAnalyzer {
           missedLines,
           percentage: total === 0 ? 100 : (coveredLines.length / total) * 100,
         });
-        
+
         // Enrich the original file coverage object with patch info if needed
         // (optional, but good for consistent data model)
         coverageFile.missingLines = [...(coverageFile.missingLines || [])]; // Keep existing missing lines
@@ -102,7 +102,8 @@ export class PatchAnalyzer {
     }
 
     const totalLines = totalCovered + totalMissed;
-    const percentage = totalLines === 0 ? 100 : (totalCovered / totalLines) * 100;
+    const percentage =
+      totalLines === 0 ? 100 : (totalCovered / totalLines) * 100;
 
     core.info(`Patch Coverage Analysis:`);
     core.info(`  Covered Lines: ${totalCovered}`);
@@ -116,5 +117,5 @@ export class PatchAnalyzer {
       percentage,
       fileBreakdown,
     };
-  }
-}
+  },
+};

@@ -191,7 +191,6 @@ export class LcovParser extends BaseCoverageParser {
             existing.covered++;
           }
         }
-        continue;
       }
     }
 

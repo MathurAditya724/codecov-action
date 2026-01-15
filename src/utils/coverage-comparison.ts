@@ -15,13 +15,44 @@ export interface CompareOptions {
 }
 
 /**
+ * Compare coverage for a single file
+ */
+function compareFiles(
+  baseFile: FileCoverage,
+  currentFile: FileCoverage
+): FileComparison {
+  return {
+    name: currentFile.name,
+    path: currentFile.path,
+    baseLineRate: baseFile.lineRate,
+    currentLineRate: currentFile.lineRate,
+    baseBranchRate: baseFile.branchRate,
+    currentBranchRate: currentFile.branchRate,
+    deltaLineRate: Number.parseFloat(
+      (currentFile.lineRate - baseFile.lineRate).toFixed(2)
+    ),
+    deltaBranchRate: Number.parseFloat(
+      (currentFile.branchRate - baseFile.branchRate).toFixed(2)
+    ),
+    deltaStatements: currentFile.statements - baseFile.statements,
+    deltaCoveredStatements:
+      currentFile.coveredStatements - baseFile.coveredStatements,
+    deltaConditionals: currentFile.conditionals - baseFile.conditionals,
+    deltaCoveredConditionals:
+      currentFile.coveredConditionals - baseFile.coveredConditionals,
+    missingLines: currentFile.missingLines?.length || 0,
+    partialLines: currentFile.partialLines?.length || 0,
+  };
+}
+
+/**
  * Compares coverage results between base and current branches
  */
-export class CoverageComparator {
+export const CoverageComparator = {
   /**
    * Compare coverage results from base branch to current branch
    */
-  static compareResults(
+  compareResults(
     baseResults: AggregatedCoverageResults,
     currentResults: AggregatedCoverageResults,
     options?: CompareOptions
@@ -52,7 +83,7 @@ export class CoverageComparator {
         filesAdded.push(currentFile);
       } else {
         // File exists in both - compare coverage
-        const comparison = this.compareFiles(baseFile, currentFile);
+        const comparison = compareFiles(baseFile, currentFile);
         if (
           comparison.deltaLineRate !== 0 ||
           comparison.deltaBranchRate !== 0
@@ -147,43 +178,11 @@ export class CoverageComparator {
       currentMisses: currentResults.totalMisses || 0,
       currentPartials: currentResults.totalPartials || 0,
     };
-  }
-
-  /**
-   * Compare coverage for a single file
-   */
-  private static compareFiles(
-    baseFile: FileCoverage,
-    currentFile: FileCoverage
-  ): FileComparison {
-    return {
-      name: currentFile.name,
-      path: currentFile.path,
-      baseLineRate: baseFile.lineRate,
-      currentLineRate: currentFile.lineRate,
-      baseBranchRate: baseFile.branchRate,
-      currentBranchRate: currentFile.branchRate,
-      deltaLineRate: Number.parseFloat(
-        (currentFile.lineRate - baseFile.lineRate).toFixed(2)
-      ),
-      deltaBranchRate: Number.parseFloat(
-        (currentFile.branchRate - baseFile.branchRate).toFixed(2)
-      ),
-      deltaStatements: currentFile.statements - baseFile.statements,
-      deltaCoveredStatements:
-        currentFile.coveredStatements - baseFile.coveredStatements,
-      deltaConditionals: currentFile.conditionals - baseFile.conditionals,
-      deltaCoveredConditionals:
-        currentFile.coveredConditionals - baseFile.coveredConditionals,
-      missingLines: currentFile.missingLines?.length || 0,
-      partialLines: currentFile.partialLines?.length || 0,
-    };
-  }
-
+  },
   /**
    * Get a summary of coverage changes for display
    */
-  static getSummary(comparison: CoverageComparison): string {
+  getSummary(comparison: CoverageComparison): string {
     const parts: string[] = [];
 
     if (comparison.improvement) {
@@ -195,10 +194,14 @@ export class CoverageComparator {
     }
 
     parts.push(
-      `Line: ${comparison.deltaLineRate >= 0 ? "+" : ""}${comparison.deltaLineRate}%`
+      `Line: ${comparison.deltaLineRate >= 0 ? "+" : ""}${
+        comparison.deltaLineRate
+      }%`
     );
     parts.push(
-      `Branch: ${comparison.deltaBranchRate >= 0 ? "+" : ""}${comparison.deltaBranchRate}%`
+      `Branch: ${comparison.deltaBranchRate >= 0 ? "+" : ""}${
+        comparison.deltaBranchRate
+      }%`
     );
 
     if (comparison.filesAdded.length > 0) {
@@ -210,6 +213,5 @@ export class CoverageComparator {
     }
 
     return parts.join(" | ");
-  }
-}
-
+  },
+};

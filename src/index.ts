@@ -288,27 +288,10 @@ async function run() {
           threshold: coverageConfig.status?.patch.threshold ?? null,
         };
 
-        // If we have real patch coverage data, use it for the check
-        let patchStatus: { status: "success" | "failure"; description: string };
-        if (patchCoverage) {
-          // Create a temporary object that matches what checkPatchStatus expects
-          // or update checkPatchStatus to accept PatchCoverageResults
-          // For now, let's just do the check here or make a new method in ThresholdChecker
-
-          const isSuccess = patchCoverage.percentage >= patchConfig.target;
-          patchStatus = {
-            status: isSuccess ? ("success" as const) : ("failure" as const),
-            description: `${patchCoverage.percentage.toFixed(2)}% ${
-              isSuccess ? ">=" : "<"
-            } target ${patchConfig.target}%`,
-          };
-        } else {
-          // Fallback if patch coverage calculation failed or not in PR
-          patchStatus = ThresholdChecker.checkPatchStatus(
-            aggregatedCoverageResults,
-            patchConfig
-          );
-        }
+        const patchStatus = ThresholdChecker.checkPatchStatus(
+          patchCoverage,
+          patchConfig
+        );
 
         // Report patch status
         await statusReporter.reportStatus(

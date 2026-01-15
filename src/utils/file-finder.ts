@@ -48,7 +48,7 @@ export class FileFinder {
       try {
         fs.accessSync(file, fs.constants.R_OK);
         validFiles.push(file);
-      } catch (error) {
+      } catch {
         core.warning(`File not readable or does not exist: ${file}`);
       }
     }

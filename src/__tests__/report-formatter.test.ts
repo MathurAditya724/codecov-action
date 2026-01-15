@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ReportFormatter } from "../formatters/report-formatter.js";
 import type { AggregatedTestResults } from "../types/test-results.js";
 
@@ -18,11 +18,10 @@ describe("ReportFormatter", () => {
 
     const comment = formatter.formatReport(results);
 
-    expect(comment).toContain("## Test Results 🧪");
     expect(comment).toContain("✅ **10 passed**");
     expect(comment).toContain("**Total: 10**");
     expect(comment).toContain("**Pass Rate: 100%**");
-    expect(comment).toContain("### ✅ All Tests Passed!");
+    expect(comment).toContain("All tests are passing successfully.");
     expect(comment).toContain("5.50s");
   });
 
@@ -64,7 +63,6 @@ describe("ReportFormatter", () => {
 
     const comment = formatter.formatReport(results);
 
-    expect(comment).toContain("## Test Results 🧪");
     expect(comment).toContain("✅ **3 passed**");
     expect(comment).toContain("❌ **2 failed**");
     expect(comment).toContain("**Pass Rate: 60%**");

@@ -1,16 +1,22 @@
 import type { NormalizedConfig } from "../types/config.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
+import type { PatchCoverageResults } from "./patch-analyzer.js";
 
 export interface StatusCheckResult {
   status: "success" | "failure";
   description: string;
 }
 
-export class ThresholdChecker {
+export interface PatchConfig {
+  target: number | "auto";
+  threshold: number | null;
+}
+
+export const ThresholdChecker = {
   /**
    * Check project coverage status against configured thresholds
    */
-  static checkProjectStatus(
+  checkProjectStatus(
     results: AggregatedCoverageResults,
     config: NormalizedConfig["status"]["project"]
   ): StatusCheckResult {
@@ -21,9 +27,9 @@ export class ThresholdChecker {
     if (typeof target === "number") {
       const isSuccess = currentCoverage >= target;
       const status = isSuccess ? "success" : "failure";
-      const description = `${currentCoverage.toFixed(
-        2
-      )}% ${isSuccess ? ">=" : "<"} target ${target}%`;
+      const description = `${currentCoverage.toFixed(2)}% ${
+        isSuccess ? ">=" : "<"
+      } target ${target}%`;
       return { status, description };
     }
 
@@ -37,23 +43,26 @@ export class ThresholdChecker {
         };
       }
 
-      const baseCoverage = results.comparison.baseLineRate;
       const delta = results.comparison.deltaLineRate;
       const allowedDrop = threshold || 0; // Default 0% drop allowed
-      
+
       // If allowedDrop is 1%, then new coverage must be >= base - 1
       // Equivalent to: delta >= -allowedDrop
       const isSuccess = delta >= -allowedDrop;
-      
+
       const status = isSuccess ? "success" : "failure";
-      
+
       let description = "";
       if (delta >= 0) {
-        description = `${currentCoverage.toFixed(2)}% (+${delta.toFixed(2)}%) relative to base`;
+        description = `${currentCoverage.toFixed(2)}% (+${delta.toFixed(
+          2
+        )}%) relative to base`;
       } else {
-        description = `${currentCoverage.toFixed(2)}% (${delta.toFixed(2)}%) relative to base`;
+        description = `${currentCoverage.toFixed(2)}% (${delta.toFixed(
+          2
+        )}%) relative to base`;
         if (allowedDrop > 0) {
-           description += ` (threshold ${allowedDrop}%)`;
+          description += ` (threshold ${allowedDrop}%)`;
         }
       }
 
@@ -61,21 +70,32 @@ export class ThresholdChecker {
     }
 
     return { status: "success", description: "Unknown target configuration" };
-  }
+  },
 
   /**
    * Check patch coverage status against configured thresholds
-   * Note: Patch coverage calculation is not yet implemented, so this uses a placeholder
    */
-  static checkPatchStatus(
-    results: AggregatedCoverageResults,
-    config: NormalizedConfig["status"]["patch"]
+  checkPatchStatus(
+    patchCoverage: PatchCoverageResults | null,
+    config: PatchConfig
   ): StatusCheckResult {
-    // Stub for future patch coverage implementation
-    // For now, if we don't have patch coverage data, we skip this check
+    // If no patch coverage data available (not in PR context or calculation failed)
+    if (!patchCoverage) {
+      return {
+        status: "success",
+        description: "Patch coverage: N/A (not in PR context)",
+      };
+    }
+
+    // Default target to 80% if set to "auto"
+    const target = typeof config.target === "number" ? config.target : 80;
+    const isSuccess = patchCoverage.percentage >= target;
+
     return {
-      status: "success",
-      description: "Patch coverage check not yet implemented",
+      status: isSuccess ? "success" : "failure",
+      description: `${patchCoverage.percentage.toFixed(2)}% ${
+        isSuccess ? ">=" : "<"
+      } target ${target}%`,
     };
-  }
-}
+  },
+};
