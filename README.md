@@ -350,3 +350,7 @@ If you're migrating from the official Codecov action:
 | `handle-no-reports-found` | `handle-no-reports-found` |
 
 **Note**: This action doesn't require a Codecov token—it uses GitHub's native artifacts for storage.
+
+## Author
+
+**Aditya Mathur**
