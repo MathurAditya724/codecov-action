@@ -135,5 +135,5 @@ outputs:
     description: The flags provided for the coverage upload
 
 runs:
-  using: node20
+  using: node24
   main: dist/index.js
