@@ -394,9 +394,11 @@ async function run() {
 
     // Generate report using the formatter
     const formatter = new ReportFormatter();
-    // Fall back to "all" on the base branch since there's no diff to filter by
+    // Fall back to "all" on the base branch since there's no diff to filter by.
+    // The default filesMode is "changed", so this handles both explicit and
+    // default "changed" values when running on the base branch itself.
     const effectiveFilesMode =
-      coverageConfig.config.files === "changed" && currentBranch === baseBranch
+      coverageConfig.config.files !== "none" && currentBranch === baseBranch
         ? "all"
         : coverageConfig.config.files;
 

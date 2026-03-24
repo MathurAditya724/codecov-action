@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as core from "@actions/core";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigLoader } from "../config/config-loader.js";
 
 vi.mock("node:fs");
@@ -15,9 +15,9 @@ describe("ConfigLoader", () => {
 
   it("should return defaults when no config file found", async () => {
     vi.spyOn(fs, "existsSync").mockReturnValue(false);
-    
+
     const config = await loader.loadConfig();
-    
+
     expect(config.status.project.target).toBe("auto");
     expect(config.status.project.threshold).toBeNull();
     expect(config.status.project.informational).toBe(false);
@@ -25,7 +25,7 @@ describe("ConfigLoader", () => {
     expect(config.status.patch.informational).toBe(false);
     expect(config.ignore).toEqual([]);
     expect(config.comment.enabled).toBe(false);
-    expect(config.config.files).toBe("all");
+    expect(config.config.files).toBe("changed");
   });
 
   it("should parse valid yaml config", async () => {
@@ -263,12 +263,12 @@ coverage:
   });
 
   describe("config section", () => {
-    it("should default config.files to all when not specified", async () => {
+    it("should default config.files to changed when not specified", async () => {
       vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
       const config = await loader.loadConfig();
 
-      expect(config.config.files).toBe("all");
+      expect(config.config.files).toBe("changed");
     });
 
     it("should parse config.files changed", async () => {
@@ -310,7 +310,7 @@ config:
       expect(config.config.files).toBe("all");
     });
 
-    it("should fallback to all for invalid config.files value", async () => {
+    it("should fallback to changed for invalid config.files value", async () => {
       const yaml = `
 config:
   files: bad
@@ -323,9 +323,9 @@ config:
 
       const config = await loader.loadConfig();
 
-      expect(config.config.files).toBe("all");
+      expect(config.config.files).toBe("changed");
       expect(warningSpy).toHaveBeenCalledWith(
-        'Invalid config.files value "bad". Falling back to "all". Valid values: all, changed, none.'
+        'Invalid config.files value "bad". Falling back to "changed". Valid values: all, changed, none.',
       );
     });
   });

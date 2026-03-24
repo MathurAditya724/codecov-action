@@ -101,16 +101,17 @@ index 0000000..e69de29
 +  console.log("world");
 +}
 +`;
-    
+
     // Coverage report has no entry for src/new-file.ts
     const result = PatchAnalyzer.analyzePatchCoverage(
-      diffWithNewFile, 
-      mockCoverage
+      diffWithNewFile,
+      mockCoverage,
     );
 
     expect(result.totalLines).toBe(0);
     expect(result.percentage).toBe(100); // Default when no lines found
     expect(result.changedFiles).toEqual(["src/new-file.ts"]);
+    expect(result.unmatchedFiles).toEqual(["src/new-file.ts"]);
   });
 
   it("should ignore non-executable lines (comments/whitespace) in diff", () => {
@@ -124,17 +125,17 @@ index 83db48f..bf269f4 100644
    return a + b;
  }
 `;
-    
+
     PatchAnalyzer.analyzePatchCoverage(diffWithComment, mockCoverage);
 
     // Line 11 added, but not in mockCoverage lines map?
     // Wait, mockCoverage has line 11. Let's adjust mock to NOT have the comment line.
     // In our mock, lines are 10, 11, 13, 14...
-    // The diff adds a line at position 11. 
+    // The diff adds a line at position 11.
     // Git diff lines are tricky. The 'ln' from parse-diff matches the NEW file line numbers.
     // If we insert a line at 11, the old 11 becomes 12.
     // For this test, let's assume we add a line 99 that isn't in coverage.
-    
+
     const simpleDiff = `diff --git a/src/utils.ts b/src/utils.ts
 index 83db48f..bf269f4 100644
 --- a/src/utils.ts
@@ -143,7 +144,10 @@ index 83db48f..bf269f4 100644
 +  // Comment line 99
 `;
 
-    const result2 = PatchAnalyzer.analyzePatchCoverage(simpleDiff, mockCoverage);
+    const result2 = PatchAnalyzer.analyzePatchCoverage(
+      simpleDiff,
+      mockCoverage,
+    );
     expect(result2.totalLines).toBe(0); // Line 99 is not in coverage map, so ignored
   });
 
@@ -179,10 +183,104 @@ index 0000000..e69de29
 
     const result = PatchAnalyzer.analyzePatchCoverage(
       diffWithDeletedAndDuplicate,
-      mockCoverage
+      mockCoverage,
     );
 
     expect(result.changedFiles).toEqual(["src/utils.ts", "src/new-file.ts"]);
     expect(result.changedFiles).not.toContain("src/removed.ts");
+  });
+
+  it("should match absolute coverage paths against relative diff paths via suffix", () => {
+    // Coverage data has absolute paths (e.g. from cargo llvm-cov),
+    // diff has repo-relative paths
+    const absolutePathCoverage: AggregatedCoverageResults = {
+      totalStatements: 100,
+      coveredStatements: 80,
+      totalConditionals: 10,
+      coveredConditionals: 8,
+      totalMethods: 10,
+      coveredMethods: 8,
+      lineRate: 80,
+      branchRate: 80,
+      files: [
+        {
+          name: "utils.ts",
+          path: "/home/runner/work/repo/repo/src/utils.ts",
+          statements: 10,
+          coveredStatements: 8,
+          conditionals: 2,
+          coveredConditionals: 1,
+          methods: 2,
+          coveredMethods: 2,
+          lineRate: 80,
+          branchRate: 50,
+          lines: [
+            { lineNumber: 10, count: 1, type: "stmt" },
+            { lineNumber: 11, count: 1, type: "stmt" },
+            { lineNumber: 13, count: 1, type: "method" },
+            { lineNumber: 14, count: 1, type: "stmt" },
+            { lineNumber: 17, count: 1, type: "method" },
+            { lineNumber: 18, count: 1, type: "cond" },
+            { lineNumber: 19, count: 0, type: "stmt" },
+            { lineNumber: 21, count: 1, type: "stmt" },
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      sampleDiff,
+      absolutePathCoverage,
+    );
+
+    // Should match via suffix and produce the same results as exact match
+    expect(result.totalLines).toBe(6);
+    expect(result.coveredLines).toBe(5);
+    expect(result.missedLines).toBe(1);
+    expect(result.percentage).toBeCloseTo(83.33, 2);
+    expect(result.unmatchedFiles).toEqual([]);
+  });
+
+  it("should track unmatched files when no coverage paths match", () => {
+    const noMatchCoverage: AggregatedCoverageResults = {
+      totalStatements: 50,
+      coveredStatements: 40,
+      totalConditionals: 5,
+      coveredConditionals: 4,
+      totalMethods: 5,
+      coveredMethods: 4,
+      lineRate: 80,
+      branchRate: 80,
+      files: [
+        {
+          name: "other.ts",
+          path: "src/other.ts",
+          statements: 50,
+          coveredStatements: 40,
+          conditionals: 5,
+          coveredConditionals: 4,
+          methods: 5,
+          coveredMethods: 4,
+          lineRate: 80,
+          branchRate: 80,
+          lines: [{ lineNumber: 1, count: 1, type: "stmt" }],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      sampleDiff,
+      noMatchCoverage,
+    );
+
+    expect(result.totalLines).toBe(0);
+    expect(result.percentage).toBe(100);
+    expect(result.unmatchedFiles).toEqual(["src/utils.ts"]);
+  });
+
+  it("should return empty unmatchedFiles when all files match", () => {
+    const result = PatchAnalyzer.analyzePatchCoverage(sampleDiff, mockCoverage);
+
+    expect(result.unmatchedFiles).toEqual([]);
   });
 });

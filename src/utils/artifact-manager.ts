@@ -9,6 +9,15 @@ import type { AggregatedCoverageResults } from "../types/coverage.js";
 import type { AggregatedTestResults } from "../types/test-results.js";
 
 /**
+ * Workflow run conclusions we consider valid for downloading base artifacts.
+ * We accept "success" and "failure" because a workflow can have overall
+ * "failure" conclusion due to unrelated jobs while the job that uploaded
+ * the coverage artifact succeeded. We exclude "cancelled", "timed_out",
+ * "action_required", and "stale" as those may have incomplete artifacts.
+ */
+const VALID_RUN_CONCLUSIONS = new Set(["success", "failure"]);
+
+/**
  * Manages artifact upload and download for test results comparison
  */
 export class ArtifactManager {
@@ -99,7 +108,12 @@ export class ArtifactManager {
     name?: string,
   ): Promise<void> {
     try {
-      const artifactName = this.getArtifactName(branchName, "test", undefined, name);
+      const artifactName = this.getArtifactName(
+        branchName,
+        "test",
+        undefined,
+        name,
+      );
       core.info(`📤 Uploading test results as artifact: ${artifactName}`);
 
       // Create a temporary directory for the artifact
@@ -197,10 +211,23 @@ export class ArtifactManager {
     name?: string,
   ): Promise<AggregatedTestResults | null> {
     try {
-      const artifactName = this.getArtifactName(baseBranch, "test", undefined, name);
-      const legacyArtifactName = this.getLegacyArtifactName(baseBranch, "test", undefined, name);
+      const artifactName = this.getArtifactName(
+        baseBranch,
+        "test",
+        undefined,
+        name,
+      );
+      const legacyArtifactName = this.getLegacyArtifactName(
+        baseBranch,
+        "test",
+        undefined,
+        name,
+      );
       const unflaggedArtifactName = this.getArtifactName(baseBranch, "test");
-      const legacyUnflaggedArtifactName = this.getLegacyArtifactName(baseBranch, "test");
+      const legacyUnflaggedArtifactName = this.getLegacyArtifactName(
+        baseBranch,
+        "test",
+      );
 
       const artifactNamesToTry = [
         ...new Set([
@@ -211,27 +238,38 @@ export class ArtifactManager {
         ]),
       ];
 
-      core.info(`📥 Attempting to download base test results: ${artifactNamesToTry[0]}`);
+      core.info(
+        `📥 Attempting to download base test results: ${artifactNamesToTry[0]}`,
+      );
 
-      // Find the latest successful workflow run on the base branch
-      const workflowRuns =
+      // Find the latest completed workflow run on the base branch.
+      // We use "completed" instead of "success" because the overall workflow
+      // conclusion may be "failure" due to unrelated jobs failing, even when
+      // the job that uploaded the coverage artifact succeeded.
+      const workflowRunsResponse =
         await this.octokit.rest.actions.listWorkflowRunsForRepo({
           owner: this.owner,
           repo: this.repo,
           branch: baseBranch,
-          status: "success",
+          status: "completed",
           per_page: 10,
         });
 
-      if (workflowRuns.data.workflow_runs.length === 0) {
+      // Filter to runs with valid conclusions (success, failure) — exclude
+      // cancelled/timed_out runs that may have incomplete artifacts.
+      const validRuns = workflowRunsResponse.data.workflow_runs.filter(
+        (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
+      );
+
+      if (validRuns.length === 0) {
         core.info(
-          `ℹ️ No successful workflow runs found for branch '${baseBranch}'`,
+          `ℹ️ No completed workflow runs found for branch '${baseBranch}'`,
         );
         return null;
       }
 
       // Look through recent runs for the artifact
-      for (const run of workflowRuns.data.workflow_runs) {
+      for (const run of validRuns) {
         const artifacts =
           await this.octokit.rest.actions.listWorkflowRunArtifacts({
             owner: this.owner,
@@ -245,7 +283,9 @@ export class ArtifactManager {
           );
 
           if (artifact) {
-            core.info(`Found test artifact '${nameToTry}' from run #${run.run_number}`);
+            core.info(
+              `Found test artifact '${nameToTry}' from run #${run.run_number}`,
+            );
 
             // Download the artifact
             const download = await this.octokit.rest.actions.downloadArtifact({
@@ -262,7 +302,10 @@ export class ArtifactManager {
             const zipPath = path.join(tmpDir, "artifact.zip");
 
             // The download is a buffer, write it to file
-            fs.writeFileSync(zipPath, Buffer.from(download.data as ArrayBuffer));
+            fs.writeFileSync(
+              zipPath,
+              Buffer.from(download.data as ArrayBuffer),
+            );
 
             // Extract and read the results
             const results = this.extractAndReadResults(zipPath, tmpDir);
@@ -310,14 +353,20 @@ export class ArtifactManager {
         flags,
         name,
       );
-      const unflaggedArtifactName = this.getArtifactName(baseBranch, "coverage");
+      const unflaggedArtifactName = this.getArtifactName(
+        baseBranch,
+        "coverage",
+      );
       const legacyFlaggedArtifactName = this.getLegacyArtifactName(
         baseBranch,
         "coverage",
         flags,
         name,
       );
-      const legacyUnflaggedArtifactName = this.getLegacyArtifactName(baseBranch, "coverage");
+      const legacyUnflaggedArtifactName = this.getLegacyArtifactName(
+        baseBranch,
+        "coverage",
+      );
 
       const artifactNamesToTry = [
         ...new Set([
@@ -336,25 +385,34 @@ export class ArtifactManager {
         core.info(`   Looking for flags: ${flags.join(", ")}`);
       }
 
-      // Find the latest successful workflow run on the base branch
-      const workflowRuns =
+      // Find the latest completed workflow run on the base branch.
+      // We use "completed" instead of "success" because the overall workflow
+      // conclusion may be "failure" due to unrelated jobs failing, even when
+      // the job that uploaded the coverage artifact succeeded.
+      const workflowRunsResponse =
         await this.octokit.rest.actions.listWorkflowRunsForRepo({
           owner: this.owner,
           repo: this.repo,
           branch: baseBranch,
-          status: "success",
+          status: "completed",
           per_page: 10,
         });
 
-      if (workflowRuns.data.workflow_runs.length === 0) {
+      // Filter to runs with valid conclusions (success, failure) — exclude
+      // cancelled/timed_out runs that may have incomplete artifacts.
+      const validRuns = workflowRunsResponse.data.workflow_runs.filter(
+        (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
+      );
+
+      if (validRuns.length === 0) {
         core.info(
-          `ℹ️ No successful workflow runs found for branch '${baseBranch}'`,
+          `ℹ️ No completed workflow runs found for branch '${baseBranch}'`,
         );
         return null;
       }
 
       // Look through recent runs for the artifact
-      for (const run of workflowRuns.data.workflow_runs) {
+      for (const run of validRuns) {
         const artifacts =
           await this.octokit.rest.actions.listWorkflowRunArtifacts({
             owner: this.owner,
