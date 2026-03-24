@@ -20,7 +20,7 @@ export const ThresholdChecker = {
    */
   checkProjectStatus(
     results: AggregatedCoverageResults,
-    config: NormalizedConfig["status"]["project"]
+    config: NormalizedConfig["status"]["project"],
   ): StatusCheckResult {
     const { target, threshold, informational } = config;
     const currentCoverage = results.lineRate;
@@ -51,18 +51,21 @@ export const ThresholdChecker = {
 
       // If allowedDrop is 1%, then new coverage must be >= base - 1
       // Equivalent to: delta >= -allowedDrop
-      const isSuccess = delta >= -allowedDrop;
+      // Add epsilon tolerance (half a rounding step at 2dp) to absorb
+      // floating-point noise from coverage rate calculations.
+      const EPSILON = 0.005;
+      const isSuccess = delta >= -(allowedDrop + EPSILON);
 
       const status = isSuccess ? "success" : "failure";
 
       let description = "";
       if (delta >= 0) {
         description = `${currentCoverage.toFixed(2)}% (+${delta.toFixed(
-          2
+          2,
         )}%) relative to base`;
       } else {
         description = `${currentCoverage.toFixed(2)}% (${delta.toFixed(
-          2
+          2,
         )}%) relative to base`;
         if (allowedDrop > 0) {
           description += ` (threshold ${allowedDrop}%)`;
@@ -72,7 +75,11 @@ export const ThresholdChecker = {
       return { status, description, informational };
     }
 
-    return { status: "success", description: "Unknown target configuration", informational };
+    return {
+      status: "success",
+      description: "Unknown target configuration",
+      informational,
+    };
   },
 
   /**
@@ -80,7 +87,7 @@ export const ThresholdChecker = {
    */
   checkPatchStatus(
     patchCoverage: PatchCoverageResults | null,
-    config: PatchConfig
+    config: PatchConfig,
   ): StatusCheckResult {
     const { informational } = config;
 

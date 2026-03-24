@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ThresholdChecker } from "../analyzers/threshold-checker.js";
 import type { PatchCoverageResults } from "../analyzers/patch-analyzer.js";
+import { ThresholdChecker } from "../analyzers/threshold-checker.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
 
 describe("ThresholdChecker", () => {
@@ -28,7 +28,11 @@ describe("ThresholdChecker", () => {
     });
 
     it("should pass auto target when coverage improves", () => {
-      const config = { target: "auto" as const, threshold: 0, informational: false };
+      const config = {
+        target: "auto" as const,
+        threshold: 0,
+        informational: false,
+      };
       // delta +5 > -0
       const result = ThresholdChecker.checkProjectStatus(mockResults, config);
       expect(result.status).toBe("success");
@@ -44,11 +48,17 @@ describe("ThresholdChecker", () => {
         },
       } as AggregatedCoverageResults;
 
-      const config = { target: "auto" as const, threshold: 5, informational: false };
+      const config = {
+        target: "auto" as const,
+        threshold: 5,
+        informational: false,
+      };
       // delta -1 >= -5
       const result = ThresholdChecker.checkProjectStatus(dropResults, config);
       expect(result.status).toBe("success");
-      expect(result.description).toContain("(-1.00%) relative to base (threshold 5%)");
+      expect(result.description).toContain(
+        "(-1.00%) relative to base (threshold 5%)",
+      );
     });
 
     it("should fail auto target when drop exceeds threshold", () => {
@@ -60,9 +70,55 @@ describe("ThresholdChecker", () => {
         },
       } as AggregatedCoverageResults;
 
-      const config = { target: "auto" as const, threshold: 5, informational: false };
+      const config = {
+        target: "auto" as const,
+        threshold: 5,
+        informational: false,
+      };
       // delta -10 < -5
       const result = ThresholdChecker.checkProjectStatus(dropResults, config);
+      expect(result.status).toBe("failure");
+    });
+
+    it("should pass auto target when rounding causes tiny negative delta within epsilon", () => {
+      const roundingResults = {
+        lineRate: 70.27,
+        comparison: {
+          deltaLineRate: -0.004,
+        },
+      } as AggregatedCoverageResults;
+
+      const config = {
+        target: "auto" as const,
+        threshold: 0,
+        informational: false,
+      };
+      // delta -0.004 is within rounding tolerance (epsilon 0.005) — should pass
+      const result = ThresholdChecker.checkProjectStatus(
+        roundingResults,
+        config,
+      );
+      expect(result.status).toBe("success");
+    });
+
+    it("should fail auto target when negative delta exceeds epsilon", () => {
+      const roundingResults = {
+        lineRate: 70.27,
+        comparison: {
+          deltaLineRate: -0.01,
+        },
+      } as AggregatedCoverageResults;
+
+      const config = {
+        target: "auto" as const,
+        threshold: 0,
+        informational: false,
+      };
+      // delta -0.01 exceeds rounding tolerance (epsilon 0.005) — should fail
+      const result = ThresholdChecker.checkProjectStatus(
+        roundingResults,
+        config,
+      );
       expect(result.status).toBe("failure");
     });
 
@@ -100,7 +156,10 @@ describe("ThresholdChecker", () => {
 
     it("should pass when patch coverage exceeds target", () => {
       const config = { target: 70, threshold: null, informational: false };
-      const result = ThresholdChecker.checkPatchStatus(mockPatchCoverage, config);
+      const result = ThresholdChecker.checkPatchStatus(
+        mockPatchCoverage,
+        config,
+      );
       expect(result.status).toBe("success");
       expect(result.description).toContain("80.00%");
       expect(result.description).toContain(">= target 70%");
@@ -108,7 +167,10 @@ describe("ThresholdChecker", () => {
 
     it("should fail when patch coverage is below target", () => {
       const config = { target: 90, threshold: null, informational: false };
-      const result = ThresholdChecker.checkPatchStatus(mockPatchCoverage, config);
+      const result = ThresholdChecker.checkPatchStatus(
+        mockPatchCoverage,
+        config,
+      );
       expect(result.status).toBe("failure");
       expect(result.description).toContain("80.00%");
       expect(result.description).toContain("< target 90%");
@@ -126,7 +188,11 @@ describe("ThresholdChecker", () => {
         ...mockPatchCoverage,
         percentage: 75,
       };
-      const config = { target: "auto" as const, threshold: null, informational: false };
+      const config = {
+        target: "auto" as const,
+        threshold: null,
+        informational: false,
+      };
       const result = ThresholdChecker.checkPatchStatus(lowCoverage, config);
       expect(result.status).toBe("failure");
       expect(result.description).toContain("< target 80%");
@@ -134,21 +200,30 @@ describe("ThresholdChecker", () => {
 
     it("should pass when patch coverage equals target exactly", () => {
       const config = { target: 80, threshold: null, informational: false };
-      const result = ThresholdChecker.checkPatchStatus(mockPatchCoverage, config);
+      const result = ThresholdChecker.checkPatchStatus(
+        mockPatchCoverage,
+        config,
+      );
       expect(result.status).toBe("success");
       expect(result.description).toContain(">= target 80%");
     });
 
     it("should pass through informational flag when true", () => {
       const config = { target: 90, threshold: null, informational: true };
-      const result = ThresholdChecker.checkPatchStatus(mockPatchCoverage, config);
+      const result = ThresholdChecker.checkPatchStatus(
+        mockPatchCoverage,
+        config,
+      );
       expect(result.status).toBe("failure");
       expect(result.informational).toBe(true);
     });
 
     it("should pass through informational flag when false", () => {
       const config = { target: 90, threshold: null, informational: false };
-      const result = ThresholdChecker.checkPatchStatus(mockPatchCoverage, config);
+      const result = ThresholdChecker.checkPatchStatus(
+        mockPatchCoverage,
+        config,
+      );
       expect(result.status).toBe("failure");
       expect(result.informational).toBe(false);
     });

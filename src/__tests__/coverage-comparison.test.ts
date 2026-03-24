@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { CoverageComparator } from "../utils/coverage-comparison.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
+import { CoverageComparator } from "../utils/coverage-comparison.js";
 
 describe("CoverageComparator", () => {
   const createMockCoverage = (
     lineRate: number,
     branchRate: number,
-    files: Array<{ name: string; path: string; lineRate: number; branchRate: number }>
+    files: Array<{
+      name: string;
+      path: string;
+      lineRate: number;
+      branchRate: number;
+    }>,
   ): AggregatedCoverageResults => ({
     totalStatements: 100,
     coveredStatements: Math.round((lineRate / 100) * 100),
@@ -42,7 +47,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.deltaLineRate).toBe(10);
@@ -61,7 +66,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.deltaLineRate).toBe(-10);
@@ -81,7 +86,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.filesAdded).toHaveLength(1);
@@ -101,7 +106,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.filesRemoved).toHaveLength(1);
@@ -122,22 +127,25 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.filesChanged).toHaveLength(2);
 
     const file1Change = comparison.filesChanged.find(
-      (f) => f.name === "file1.ts"
+      (f) => f.name === "file1.ts",
     );
-    expect(file1Change?.deltaLineRate).toBe(15);
-    expect(file1Change?.deltaBranchRate).toBe(15);
+    // Raw count delta: (9/10 - 7/10) * 100 = 20 (not 15, because
+    // Math.round(8.5) = 9 so actual coverage is 90%, not the stated 85%)
+    expect(file1Change?.deltaLineRate).toBe(20);
+    expect(file1Change?.deltaBranchRate).toBe(20);
 
     const file2Change = comparison.filesChanged.find(
-      (f) => f.name === "file2.ts"
+      (f) => f.name === "file2.ts",
     );
-    expect(file2Change?.deltaLineRate).toBe(-15);
-    expect(file2Change?.deltaBranchRate).toBe(-15);
+    // Raw count delta: (7/10 - 8/10) * 100 = -10
+    expect(file2Change?.deltaLineRate).toBe(-10);
+    expect(file2Change?.deltaBranchRate).toBe(-20);
   });
 
   it("should not include unchanged files in filesChanged", () => {
@@ -153,7 +161,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.filesChanged).toHaveLength(0);
@@ -189,7 +197,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.deltaTotalStatements).toBe(20);
@@ -206,7 +214,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     const summary = CoverageComparator.getSummary(comparison);
@@ -221,7 +229,7 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.improvement).toBe(true);
@@ -233,10 +241,9 @@ describe("CoverageComparator", () => {
 
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
-      currentCoverage
+      currentCoverage,
     );
 
     expect(comparison.improvement).toBe(true);
   });
 });
-

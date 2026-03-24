@@ -89,7 +89,13 @@ inputs:
     description: "Allowed project coverage drop % (only used when target is 'auto')"
     required: false
   target-patch:
-    description: "Target patch coverage % for changed lines"
+    description: "Target patch coverage % for changed lines (defaults to 80 if not set in input or config file)"
+    required: false
+  informational-project:
+    description: "When true, project status check always reports success (advisory mode). Overrides config file."
+    required: false
+  informational-patch:
+    description: "When true, patch status check always reports success (advisory mode). Overrides config file."
     required: false
 
   # Legacy input (deprecated, use 'files' or 'directory' instead)

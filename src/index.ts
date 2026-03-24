@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as core from "@actions/core";
 import * as glob from "@actions/glob";
-import { PatchAnalyzer } from "./analyzers/patch-analyzer.js";
 import type { PatchCoverageResults } from "./analyzers/patch-analyzer.js";
+import { PatchAnalyzer } from "./analyzers/patch-analyzer.js";
 import { ThresholdChecker } from "./analyzers/threshold-checker.js";
 import { ConfigLoader } from "./config/config-loader.js";
 import { ReportFormatter } from "./formatters/report-formatter.js";
@@ -45,6 +45,8 @@ interface CoverageConfig {
   targetProject?: number | "auto";
   thresholdProject?: number;
   targetPatch?: number;
+  informationalProject?: boolean;
+  informationalPatch?: boolean;
 }
 
 /**
@@ -122,6 +124,22 @@ async function getCoverageConfig(): Promise<CoverageConfig> {
     : undefined;
   const targetPatch = targetPatchInput ? Number(targetPatchInput) : undefined;
 
+  // Parse informational inputs (true/false → override, unset → defer to YAML config)
+  const informationalProjectInput = core.getInput("informational-project");
+  const informationalProject =
+    informationalProjectInput === "true"
+      ? true
+      : informationalProjectInput === "false"
+        ? false
+        : undefined;
+  const informationalPatchInput = core.getInput("informational-patch");
+  const informationalPatch =
+    informationalPatchInput === "true"
+      ? true
+      : informationalPatchInput === "false"
+        ? false
+        : undefined;
+
   return {
     files,
     directory,
@@ -140,6 +158,8 @@ async function getCoverageConfig(): Promise<CoverageConfig> {
     targetProject,
     thresholdProject,
     targetPatch,
+    informationalProject,
+    informationalPatch,
   };
 }
 
@@ -273,7 +293,10 @@ async function run() {
             coverageConfig.thresholdProject ??
             coverageConfig.status?.project.threshold ??
             null,
-          informational: coverageConfig.status?.project.informational ?? false,
+          informational:
+            coverageConfig.informationalProject ??
+            coverageConfig.status?.project.informational ??
+            false,
         };
 
         // Check project status
@@ -285,10 +308,18 @@ async function run() {
 
         // Report project status
         if (coverageConfig.status?.project.enabled !== false) {
+          const reportedProjectStatus =
+            projectConfig.informational && projectStatus.status === "failure"
+              ? "success"
+              : projectStatus.status;
+          const reportedProjectDesc =
+            projectConfig.informational && projectStatus.status === "failure"
+              ? `(informational) ${projectStatus.description}`
+              : projectStatus.description;
           await statusReporter.reportStatus(
             "codecov/project",
-            projectStatus.status,
-            projectStatus.description,
+            reportedProjectStatus,
+            reportedProjectDesc,
           );
         }
 
@@ -313,7 +344,10 @@ async function run() {
         const patchConfig = {
           target: patchTargetForFormatter,
           threshold: coverageConfig.status?.patch.threshold ?? null,
-          informational: coverageConfig.status?.patch.informational ?? false,
+          informational:
+            coverageConfig.informationalPatch ??
+            coverageConfig.status?.patch.informational ??
+            false,
         };
 
         const patchStatus = ThresholdChecker.checkPatchStatus(
@@ -323,10 +357,18 @@ async function run() {
 
         // Report patch status
         if (coverageConfig.status?.patch.enabled !== false) {
+          const reportedPatchStatus =
+            patchConfig.informational && patchStatus.status === "failure"
+              ? "success"
+              : patchStatus.status;
+          const reportedPatchDesc =
+            patchConfig.informational && patchStatus.status === "failure"
+              ? `(informational) ${patchStatus.description}`
+              : patchStatus.description;
           await statusReporter.reportStatus(
             "codecov/patch",
-            patchStatus.status,
-            patchStatus.description,
+            reportedPatchStatus,
+            reportedPatchDesc,
           );
         }
 
