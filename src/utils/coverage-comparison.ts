@@ -19,7 +19,7 @@ export interface CompareOptions {
  */
 function compareFiles(
   baseFile: FileCoverage,
-  currentFile: FileCoverage
+  currentFile: FileCoverage,
 ): FileComparison {
   return {
     name: currentFile.name,
@@ -28,12 +28,30 @@ function compareFiles(
     currentLineRate: currentFile.lineRate,
     baseBranchRate: baseFile.branchRate,
     currentBranchRate: currentFile.branchRate,
-    deltaLineRate: Number.parseFloat(
-      (currentFile.lineRate - baseFile.lineRate).toFixed(2)
-    ),
-    deltaBranchRate: Number.parseFloat(
-      (currentFile.branchRate - baseFile.branchRate).toFixed(2)
-    ),
+    deltaLineRate:
+      currentFile.statements > 0 && baseFile.statements > 0
+        ? Number.parseFloat(
+            (
+              (currentFile.coveredStatements / currentFile.statements -
+                baseFile.coveredStatements / baseFile.statements) *
+              100
+            ).toFixed(2),
+          )
+        : Number.parseFloat(
+            (currentFile.lineRate - baseFile.lineRate).toFixed(2),
+          ),
+    deltaBranchRate:
+      currentFile.conditionals > 0 && baseFile.conditionals > 0
+        ? Number.parseFloat(
+            (
+              (currentFile.coveredConditionals / currentFile.conditionals -
+                baseFile.coveredConditionals / baseFile.conditionals) *
+              100
+            ).toFixed(2),
+          )
+        : Number.parseFloat(
+            (currentFile.branchRate - baseFile.branchRate).toFixed(2),
+          ),
     deltaStatements: currentFile.statements - baseFile.statements,
     deltaCoveredStatements:
       currentFile.coveredStatements - baseFile.coveredStatements,
@@ -55,7 +73,7 @@ export const CoverageComparator = {
   compareResults(
     baseResults: AggregatedCoverageResults,
     currentResults: AggregatedCoverageResults,
-    options?: CompareOptions
+    options?: CompareOptions,
   ): CoverageComparison {
     // Build file maps for easy lookup
     const baseFileMap = new Map<string, FileCoverage>();
@@ -78,10 +96,7 @@ export const CoverageComparator = {
     for (const [path, currentFile] of currentFileMap) {
       const baseFile = baseFileMap.get(path);
 
-      if (!baseFile) {
-        // File was added
-        filesAdded.push(currentFile);
-      } else {
+      if (baseFile) {
         // File exists in both - compare coverage
         const comparison = compareFiles(baseFile, currentFile);
         if (
@@ -90,6 +105,9 @@ export const CoverageComparator = {
         ) {
           filesChanged.push(comparison);
         }
+      } else {
+        // File was added
+        filesAdded.push(currentFile);
       }
     }
 
@@ -100,13 +118,36 @@ export const CoverageComparator = {
       }
     }
 
-    // Calculate deltas
-    const deltaLineRate = Number.parseFloat(
-      (currentResults.lineRate - baseResults.lineRate).toFixed(2)
-    );
-    const deltaBranchRate = Number.parseFloat(
-      (currentResults.branchRate - baseResults.branchRate).toFixed(2)
-    );
+    // Calculate deltas from raw counts to avoid double-rounding errors.
+    // Falls back to subtracting pre-rounded rates when raw counts are unavailable
+    // (e.g., base artifacts from older versions).
+    const deltaLineRate =
+      currentResults.totalStatements > 0 && baseResults.totalStatements > 0
+        ? Number.parseFloat(
+            (
+              (currentResults.coveredStatements /
+                currentResults.totalStatements -
+                baseResults.coveredStatements / baseResults.totalStatements) *
+              100
+            ).toFixed(2),
+          )
+        : Number.parseFloat(
+            (currentResults.lineRate - baseResults.lineRate).toFixed(2),
+          );
+    const deltaBranchRate =
+      currentResults.totalConditionals > 0 && baseResults.totalConditionals > 0
+        ? Number.parseFloat(
+            (
+              (currentResults.coveredConditionals /
+                currentResults.totalConditionals -
+                baseResults.coveredConditionals /
+                  baseResults.totalConditionals) *
+              100
+            ).toFixed(2),
+          )
+        : Number.parseFloat(
+            (currentResults.branchRate - baseResults.branchRate).toFixed(2),
+          );
     const deltaTotalStatements =
       currentResults.totalStatements - baseResults.totalStatements;
     const deltaCoveredStatements =
@@ -196,12 +237,12 @@ export const CoverageComparator = {
     parts.push(
       `Line: ${comparison.deltaLineRate >= 0 ? "+" : ""}${
         comparison.deltaLineRate
-      }%`
+      }%`,
     );
     parts.push(
       `Branch: ${comparison.deltaBranchRate >= 0 ? "+" : ""}${
         comparison.deltaBranchRate
-      }%`
+      }%`,
     );
 
     if (comparison.filesAdded.length > 0) {
