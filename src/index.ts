@@ -394,9 +394,11 @@ async function run() {
 
     // Generate report using the formatter
     const formatter = new ReportFormatter();
-    // Fall back to "all" on the base branch since there's no diff to filter by
+    // Fall back to "all" when there is no PR context (push events), since
+    // there is no diff to filter by. This applies to pushes on any branch
+    // (main, feature branches, etc.), not just the base branch.
     const effectiveFilesMode =
-      coverageConfig.config.files === "changed" && currentBranch === baseBranch
+      coverageConfig.config.files !== "none" && !githubClient.isPullRequest()
         ? "all"
         : coverageConfig.config.files;
 

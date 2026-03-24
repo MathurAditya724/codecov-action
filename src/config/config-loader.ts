@@ -3,8 +3,8 @@ import * as path from "node:path";
 import * as core from "@actions/core";
 import * as yaml from "js-yaml";
 import type {
-  CommentFilesMode,
   CodecovConfig,
+  CommentFilesMode,
   CoverageStatusConfig,
   NormalizedConfig,
 } from "../types/config.js";
@@ -116,7 +116,7 @@ export class ConfigLoader {
    */
   private parseFilesMode(value: unknown): CommentFilesMode {
     if (value === undefined) {
-      return "all";
+      return "changed";
     }
 
     if (
@@ -129,9 +129,9 @@ export class ConfigLoader {
     core.warning(
       `Invalid config.files value "${String(
         value,
-      )}". Falling back to "all". Valid values: all, changed, none.`,
+      )}". Falling back to "changed". Valid values: all, changed, none.`,
     );
-    return "all";
+    return "changed";
   }
 
   /**

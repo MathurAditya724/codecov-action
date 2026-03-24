@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ReportFormatter } from "../formatters/report-formatter.js";
-import type { AggregatedTestResults } from "../types/test-results.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
+import type { AggregatedTestResults } from "../types/test-results.js";
 
 describe("ReportFormatter", () => {
   const formatter = new ReportFormatter();
@@ -258,7 +258,9 @@ describe("ReportFormatter", () => {
       });
 
       // Should show checkmark because patch coverage is >= configured target (70%)
-      expect(comment).toContain(":white_check_mark: Patch coverage is **77.56%**.");
+      expect(comment).toContain(
+        ":white_check_mark: Patch coverage is **77.56%**.",
+      );
       // Should show project misses as separate info
       expect(comment).toContain("Project has **1348** uncovered lines.");
       // Should NOT have the old conflated message format
@@ -308,7 +310,9 @@ describe("ReportFormatter", () => {
       const comment = formatter.formatReport(undefined, coverageResults);
 
       // Should show checkmark
-      expect(comment).toContain(":white_check_mark: Patch coverage is **100.00%**.");
+      expect(comment).toContain(
+        ":white_check_mark: Patch coverage is **100.00%**.",
+      );
       // Should NOT mention project uncovered lines
       expect(comment).not.toContain("uncovered lines");
     });
@@ -331,13 +335,19 @@ describe("ReportFormatter", () => {
       const comment = formatter.formatReport(undefined, coverageResults);
 
       // Should use lineRate (85%) which is >= 80%, so checkmark
-      expect(comment).toContain(":white_check_mark: Patch coverage is **85.00%**.");
+      expect(comment).toContain(
+        ":white_check_mark: Patch coverage is **85.00%**.",
+      );
     });
 
     it("should show all files with missing lines when filesMode is all", () => {
-      const comment = formatter.formatReport(undefined, coverageWithMissingFiles, {
-        filesMode: "all",
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "all",
+        },
+      );
 
       expect(comment).toContain("Files with missing lines (3)");
       expect(comment).toContain("`changed-file.ts`");
@@ -346,10 +356,14 @@ describe("ReportFormatter", () => {
     });
 
     it("should only show changed files when filesMode is changed", () => {
-      const comment = formatter.formatReport(undefined, coverageWithMissingFiles, {
-        filesMode: "changed",
-        changedFiles: ["src/changed-file.ts", "/src/dot-prefixed.ts"],
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "changed",
+          changedFiles: ["src/changed-file.ts", "/src/dot-prefixed.ts"],
+        },
+      );
 
       expect(comment).toContain("Files with missing lines (2)");
       expect(comment).toContain("`changed-file.ts`");
@@ -369,38 +383,84 @@ describe("ReportFormatter", () => {
         ],
       };
 
-      const comment = formatter.formatReport(undefined, coverageWithAbsolutePath, {
-        filesMode: "changed",
-        changedFiles: ["src/changed-file.ts"],
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithAbsolutePath,
+        {
+          filesMode: "changed",
+          changedFiles: ["src/changed-file.ts"],
+        },
+      );
 
       expect(comment).toContain("Files with missing lines (1)");
       expect(comment).toContain("`changed-file.ts`");
       expect(comment).not.toContain("`unchanged-file.ts`");
     });
 
+    it("should match when diff paths are absolute and coverage paths are relative", () => {
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "changed",
+          changedFiles: ["/home/runner/work/repo/repo/src/changed-file.ts"],
+        },
+      );
+
+      expect(comment).toContain("Files with missing lines (1)");
+      expect(comment).toContain("`changed-file.ts`");
+      expect(comment).not.toContain("`unchanged-file.ts`");
+    });
+
+    it("should only show changed files by default (filesMode defaults to changed)", () => {
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          changedFiles: ["src/changed-file.ts"],
+        },
+      );
+
+      expect(comment).toContain("Files with missing lines (1)");
+      expect(comment).toContain("`changed-file.ts`");
+      expect(comment).not.toContain("`unchanged-file.ts`");
+      expect(comment).not.toContain("`dot-prefixed.ts`");
+    });
+
     it("should hide file table when filesMode is none", () => {
-      const comment = formatter.formatReport(undefined, coverageWithMissingFiles, {
-        filesMode: "none",
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "none",
+        },
+      );
 
       expect(comment).not.toContain("Files with missing lines");
       expect(comment).not.toContain("`changed-file.ts`");
     });
 
     it("should hide file table when filesMode is changed and changedFiles is empty", () => {
-      const comment = formatter.formatReport(undefined, coverageWithMissingFiles, {
-        filesMode: "changed",
-        changedFiles: [],
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "changed",
+          changedFiles: [],
+        },
+      );
 
       expect(comment).not.toContain("Files with missing lines");
     });
 
     it("should hide file table when filesMode is changed and changedFiles is absent", () => {
-      const comment = formatter.formatReport(undefined, coverageWithMissingFiles, {
-        filesMode: "changed",
-      });
+      const comment = formatter.formatReport(
+        undefined,
+        coverageWithMissingFiles,
+        {
+          filesMode: "changed",
+        },
+      );
 
       expect(comment).not.toContain("Files with missing lines");
     });

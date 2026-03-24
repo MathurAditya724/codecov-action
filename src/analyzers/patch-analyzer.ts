@@ -1,6 +1,9 @@
 import * as core from "@actions/core";
 import parseDiff from "parse-diff";
-import type { AggregatedCoverageResults } from "../types/coverage.js";
+import type {
+  AggregatedCoverageResults,
+  FileCoverage,
+} from "../types/coverage.js";
 
 export interface PatchCoverageResults {
   coveredLines: number;
@@ -9,6 +12,7 @@ export interface PatchCoverageResults {
   percentage: number;
   fileBreakdown: PatchFileCoverage[];
   changedFiles: string[];
+  unmatchedFiles: string[];
 }
 
 export interface PatchFileCoverage {
@@ -18,27 +22,95 @@ export interface PatchFileCoverage {
   percentage: number;
 }
 
+/**
+ * Normalize a file path by stripping leading "./" and normalizing slashes.
+ */
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.?\//, "");
+}
+
+/**
+ * Find a coverage file matching a diff path, using exact match first,
+ * then falling back to suffix-based matching for absolute vs relative
+ * path mismatches (e.g. coverage has /home/runner/work/repo/repo/src/file.ts
+ * while diff has src/file.ts).
+ *
+ * Results are cached in resolvedPaths so the O(n) suffix scan only happens once
+ * per diff file path.
+ */
+function findCoverageFile(
+  diffPath: string,
+  coverageMap: Map<string, FileCoverage>,
+  resolvedPaths: Map<string, FileCoverage | null>,
+): FileCoverage | null {
+  // Check cache first
+  if (resolvedPaths.has(diffPath)) {
+    return resolvedPaths.get(diffPath) ?? null;
+  }
+
+  // 1. Exact match
+  const exact = coverageMap.get(diffPath);
+  if (exact) {
+    resolvedPaths.set(diffPath, exact);
+    return exact;
+  }
+
+  const normalizedDiff = normalizePath(diffPath);
+
+  // 2. Normalized equality: handles cases like "/src/file.ts" vs "src/file.ts"
+  //    where the raw strings differ but normalize to the same path.
+  for (const [coveragePath, file] of coverageMap) {
+    if (normalizePath(coveragePath) === normalizedDiff) {
+      resolvedPaths.set(diffPath, file);
+      return file;
+    }
+  }
+
+  // 3. Suffix match: coverage path ends with the diff path
+  //    e.g. "/home/runner/work/repo/repo/src/file.ts" ends with "/src/file.ts"
+  for (const [coveragePath, file] of coverageMap) {
+    const normalizedCoverage = normalizePath(coveragePath);
+
+    if (
+      normalizedCoverage.endsWith(`/${normalizedDiff}`) ||
+      normalizedDiff.endsWith(`/${normalizedCoverage}`)
+    ) {
+      core.info(
+        `  Matched diff path '${diffPath}' to coverage path '${coveragePath}' via suffix match`,
+      );
+      resolvedPaths.set(diffPath, file);
+      return file;
+    }
+  }
+
+  // No match found
+  resolvedPaths.set(diffPath, null);
+  return null;
+}
+
 export const PatchAnalyzer = {
   /**
    * Calculate patch coverage by intersecting coverage results with git diff
    */
   analyzePatchCoverage(
     diffContent: string,
-    coverageResults: AggregatedCoverageResults
+    coverageResults: AggregatedCoverageResults,
   ): PatchCoverageResults {
     const diffFiles = parseDiff(diffContent);
     const fileBreakdown: PatchFileCoverage[] = [];
     const changedFiles = new Set<string>();
+    const unmatchedFiles: string[] = [];
 
     let totalCovered = 0;
     let totalMissed = 0;
 
-    // Create a map of normalized file paths from coverage results for faster lookup
-    // Normalize by ensuring paths start with relative root logic if needed,
-    // but usually coverage paths are repo-relative (e.g. src/index.ts)
+    // Create a map of file paths from coverage results for lookup
     const coverageMap = new Map(
-      coverageResults.files.map((file) => [file.path, file])
+      coverageResults.files.map((file) => [file.path, file]),
     );
+
+    // Cache for resolved diff-path -> coverage-file mappings
+    const resolvedPaths = new Map<string, FileCoverage | null>();
 
     for (const diffFile of diffFiles) {
       // Skip files that were deleted or have no changes
@@ -47,19 +119,23 @@ export const PatchAnalyzer = {
       }
       changedFiles.add(diffFile.to);
 
-      // Try to find matching coverage file
-      // Diff paths usually strictly relative, coverage paths might vary
-      // Simple exact match first
-      const coverageFile = coverageMap.get(diffFile.to);
+      // Try to find matching coverage file (exact match, then suffix match)
+      const coverageFile = findCoverageFile(
+        diffFile.to,
+        coverageMap,
+        resolvedPaths,
+      );
 
-      // If not found, try to be more fuzzy if needed, but exact match is safest for now
-      // Assuming coverage paths are normalized to repo root
       if (!coverageFile) {
+        unmatchedFiles.push(diffFile.to);
         continue;
       }
 
       const coveredLines: number[] = [];
       const missedLines: number[] = [];
+
+      // Build a line number map for O(1) lookups instead of O(n) find() per line
+      const lineMap = new Map(coverageFile.lines.map((l) => [l.lineNumber, l]));
 
       // Iterate through chunks and changes
       for (const chunk of diffFile.chunks) {
@@ -69,9 +145,7 @@ export const PatchAnalyzer = {
             const lineNumber = change.ln;
 
             // Check if this line exists in coverage data
-            const lineCoverage = coverageFile.lines.find(
-              (l) => l.lineNumber === lineNumber
-            );
+            const lineCoverage = lineMap.get(lineNumber);
 
             // If line exists in coverage data (meaning it's executable code, not comment/whitespace)
             if (lineCoverage) {
@@ -100,13 +174,29 @@ export const PatchAnalyzer = {
         // Enrich the original file coverage object with patch info if needed
         // (optional, but good for consistent data model)
         coverageFile.missingLines = [...(coverageFile.missingLines || [])]; // Keep existing missing lines
-        // We could add specific patch missing lines here if we wanted to track them separately
       }
     }
 
     const totalLines = totalCovered + totalMissed;
     const percentage =
       totalLines === 0 ? 100 : (totalCovered / totalLines) * 100;
+
+    // Warn when no changed files could be matched to coverage data
+    if (unmatchedFiles.length > 0 && totalLines === 0) {
+      const sampleCoveragePaths = coverageResults.files
+        .slice(0, 3)
+        .map((f) => f.path);
+      core.warning(
+        `Patch coverage defaulted to 100% because no changed files matched coverage data.\n` +
+          `  Unmatched diff files: ${unmatchedFiles.join(", ")}\n` +
+          `  Sample coverage paths: ${sampleCoveragePaths.join(", ")}\n` +
+          `  This usually indicates a path format mismatch between your coverage tool and the repository.`,
+      );
+    } else if (unmatchedFiles.length > 0) {
+      core.info(
+        `  Some changed files had no coverage data: ${unmatchedFiles.join(", ")}`,
+      );
+    }
 
     core.info(`Patch Coverage Analysis:`);
     core.info(`  Covered Lines: ${totalCovered}`);
@@ -120,6 +210,7 @@ export const PatchAnalyzer = {
       percentage,
       fileBreakdown,
       changedFiles: [...changedFiles],
+      unmatchedFiles,
     };
   },
 };
