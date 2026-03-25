@@ -1,0 +1,42 @@
+name: Checking bundle
+
+on:
+  pull_request:
+    branches:
+      - "*"
+
+permissions:
+  contents: read
+
+jobs:
+  check-dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Check if dist/ is up to date
+        run: |
+          if ! git diff --quiet dist/; then
+            echo "::error::dist/index.js is out of date. Run 'pnpm run build' and commit the result."
+            git diff --stat dist/
+            exit 1
+          fi
+          echo "dist/index.js is up to date."
