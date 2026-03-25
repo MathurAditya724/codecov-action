@@ -1,33 +1,19 @@
 version: 2
 updates:
-  # Root package (the GitHub Action)
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
-    groups:
-      actions-deps:
-        patterns:
-          - "@actions/*"
-      dev-deps:
-        dependency-type: "development"
+    open-pull-requests-limit: 0 # Only security updates
 
-  # Website package
   - package-ecosystem: "npm"
     directory: "/website"
     schedule:
       interval: "weekly"
-    groups:
-      ui-deps:
-        patterns:
-          - "@radix-ui/*"
-          - "lucide-react"
-          - "recharts"
-      dev-deps:
-        dependency-type: "development"
+    open-pull-requests-limit: 0 # Only security updates
 
-  # GitHub Actions workflows
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0 # Only security updates
