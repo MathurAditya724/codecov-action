@@ -29897,8 +29897,11 @@ const PatchAnalyzer = {
             }
             const coveredLines = [];
             const missedLines = [];
+            const partialLines = [];
             // Build a line number map for O(1) lookups instead of O(n) find() per line
             const lineMap = new Map(coverageFile.lines.map((l) => [l.lineNumber, l]));
+            // Build a set of partial lines from file coverage for quick lookup
+            const filePartialSet = new Set(coverageFile.partialLines ?? []);
             // Iterate through chunks and changes
             for (const chunk of diffFile.chunks) {
                 for (const change of chunk.changes) {
@@ -29909,25 +29912,32 @@ const PatchAnalyzer = {
                         const lineCoverage = lineMap.get(lineNumber);
                         // If line exists in coverage data (meaning it's executable code, not comment/whitespace)
                         if (lineCoverage) {
-                            if (lineCoverage.count > 0) {
-                                coveredLines.push(lineNumber);
-                                totalCovered++;
-                            }
-                            else {
+                            if (lineCoverage.count === 0) {
                                 missedLines.push(lineNumber);
                                 totalMissed++;
+                            }
+                            else {
+                                coveredLines.push(lineNumber);
+                                totalCovered++;
+                                // Check if this covered line has partial branch coverage
+                                if (filePartialSet.has(lineNumber)) {
+                                    partialLines.push(lineNumber);
+                                }
                             }
                         }
                     }
                 }
             }
             // Only add to breakdown if there were executable lines in the patch
-            if (coveredLines.length > 0 || missedLines.length > 0) {
+            if (coveredLines.length > 0 ||
+                missedLines.length > 0 ||
+                partialLines.length > 0) {
                 const total = coveredLines.length + missedLines.length;
                 fileBreakdown.push({
                     path: diffFile.to,
                     coveredLines,
                     missedLines,
+                    partialLines,
                     percentage: total === 0 ? 100 : (coveredLines.length / total) * 100,
                 });
                 // Enrich the original file coverage object with patch info if needed
@@ -33116,32 +33126,73 @@ class ReportFormatter {
         }
         lines.push("");
         const filesMode = options.filesMode || "changed";
-        const filesWithMissing = this.getFilesWithMissingLines(results, options);
-        if (filesMode !== "none" && filesWithMissing.length > 0) {
-            lines.push("<details>");
-            lines.push(`<summary>Files with missing lines (${filesWithMissing.length})</summary>`);
-            lines.push("");
-            lines.push("| File | Patch % | Lines |");
-            lines.push("|------|---------|-------|");
-            for (const file of filesWithMissing) {
-                const fileName = this.getFileName(file.path);
-                const missingCount = file.missingLines?.length || 0;
-                const partialCount = file.partialLines?.length || 0;
-                let linesText = "";
-                if (missingCount > 0 && partialCount > 0) {
-                    linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+        const patchBreakdown = options.patchFileBreakdown;
+        // When patch file breakdown is available (PR context), use it to show
+        // only the uncovered lines within the diff rather than all project-wide
+        // uncovered lines. This matches the behavior of Codecov's official comments.
+        if (patchBreakdown && filesMode !== "none") {
+            const patchFilesWithMissing = patchBreakdown
+                .filter((f) => f.missedLines.length > 0 || f.partialLines.length > 0)
+                .sort((a, b) => b.missedLines.length +
+                b.partialLines.length -
+                (a.missedLines.length + a.partialLines.length));
+            if (patchFilesWithMissing.length > 0) {
+                lines.push("<details>");
+                lines.push(`<summary>Files with missing lines (${patchFilesWithMissing.length})</summary>`);
+                lines.push("");
+                lines.push("| File | Patch % | Lines |");
+                lines.push("|------|---------|-------|");
+                for (const file of patchFilesWithMissing) {
+                    const fileName = this.getFileName(file.path);
+                    const missingCount = file.missedLines.length;
+                    const partialCount = file.partialLines.length;
+                    let linesText = "";
+                    if (missingCount > 0 && partialCount > 0) {
+                        linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+                    }
+                    else if (missingCount > 0) {
+                        linesText = `:warning: ${missingCount} Missing`;
+                    }
+                    else if (partialCount > 0) {
+                        linesText = `:warning: ${partialCount} partials`;
+                    }
+                    lines.push(`| \`${fileName}\` | ${file.percentage.toFixed(2)}% | ${linesText} |`);
                 }
-                else if (missingCount > 0) {
-                    linesText = `:warning: ${missingCount} Missing`;
-                }
-                else if (partialCount > 0) {
-                    linesText = `:warning: ${partialCount} partials`;
-                }
-                lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
+                lines.push("");
+                lines.push("</details>");
+                lines.push("");
             }
-            lines.push("");
-            lines.push("</details>");
-            lines.push("");
+        }
+        else if (filesMode !== "none") {
+            // Fallback: no patch breakdown available (push events / non-PR context)
+            // Show project-wide missing lines as before.
+            const filesWithMissing = this.getFilesWithMissingLines(results, options);
+            if (filesWithMissing.length > 0) {
+                lines.push("<details>");
+                lines.push(`<summary>Files with missing lines (${filesWithMissing.length})</summary>`);
+                lines.push("");
+                lines.push("| File | Coverage % | Lines |");
+                lines.push("|------|------------|-------|");
+                for (const file of filesWithMissing) {
+                    const fileName = this.getFileName(file.path);
+                    const missingCount = file.missingLines?.length || 0;
+                    const partialCount = file.partialLines?.length || 0;
+                    let linesText = "";
+                    if (missingCount > 0 && partialCount > 0) {
+                        linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+                    }
+                    else if (missingCount > 0) {
+                        linesText = `:warning: ${missingCount} Missing`;
+                    }
+                    else if (partialCount > 0) {
+                        linesText = `:warning: ${partialCount} partials`;
+                    }
+                    lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
+                }
+                lines.push("");
+                lines.push("</details>");
+                lines.push("");
+            }
         }
         // Coverage diff (collapsible)
         if (results.comparison) {
@@ -231407,6 +231458,7 @@ async function run() {
                 ? patchCoverage?.changedFiles || []
                 : undefined,
             patchTarget: patchTargetForFormatter,
+            patchFileBreakdown: patchCoverage?.fileBreakdown,
         };
         const summaryReportBody = formatter.formatReport(aggregatedTestResults || undefined, aggregatedCoverageResults || undefined, reportOptions);
         // Write Job Summary (always)

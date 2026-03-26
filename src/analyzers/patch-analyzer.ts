@@ -19,6 +19,7 @@ export interface PatchFileCoverage {
   path: string;
   coveredLines: number[];
   missedLines: number[];
+  partialLines: number[];
   percentage: number;
 }
 
@@ -133,9 +134,13 @@ export const PatchAnalyzer = {
 
       const coveredLines: number[] = [];
       const missedLines: number[] = [];
+      const partialLines: number[] = [];
 
       // Build a line number map for O(1) lookups instead of O(n) find() per line
       const lineMap = new Map(coverageFile.lines.map((l) => [l.lineNumber, l]));
+
+      // Build a set of partial lines from file coverage for quick lookup
+      const filePartialSet = new Set(coverageFile.partialLines ?? []);
 
       // Iterate through chunks and changes
       for (const chunk of diffFile.chunks) {
@@ -149,12 +154,16 @@ export const PatchAnalyzer = {
 
             // If line exists in coverage data (meaning it's executable code, not comment/whitespace)
             if (lineCoverage) {
-              if (lineCoverage.count > 0) {
-                coveredLines.push(lineNumber);
-                totalCovered++;
-              } else {
+              if (lineCoverage.count === 0) {
                 missedLines.push(lineNumber);
                 totalMissed++;
+              } else {
+                coveredLines.push(lineNumber);
+                totalCovered++;
+                // Check if this covered line has partial branch coverage
+                if (filePartialSet.has(lineNumber)) {
+                  partialLines.push(lineNumber);
+                }
               }
             }
           }
@@ -162,12 +171,17 @@ export const PatchAnalyzer = {
       }
 
       // Only add to breakdown if there were executable lines in the patch
-      if (coveredLines.length > 0 || missedLines.length > 0) {
+      if (
+        coveredLines.length > 0 ||
+        missedLines.length > 0 ||
+        partialLines.length > 0
+      ) {
         const total = coveredLines.length + missedLines.length;
         fileBreakdown.push({
           path: diffFile.to,
           coveredLines,
           missedLines,
+          partialLines,
           percentage: total === 0 ? 100 : (coveredLines.length / total) * 100,
         });
 

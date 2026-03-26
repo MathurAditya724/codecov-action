@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PatchFileCoverage } from "../analyzers/patch-analyzer.js";
 import { ReportFormatter } from "../formatters/report-formatter.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
 import type { AggregatedTestResults } from "../types/test-results.js";
@@ -463,6 +464,184 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).not.toContain("Files with missing lines");
+    });
+
+    describe("Patch file breakdown (PR context)", () => {
+      const patchFileBreakdown: PatchFileCoverage[] = [
+        {
+          path: "src/args.rs",
+          coveredLines: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+          missedLines: [20, 21],
+          partialLines: [],
+          percentage: 83.33,
+        },
+        {
+          path: "src/types/bytes.rs",
+          coveredLines: [5, 6, 7, 8, 9],
+          missedLines: [],
+          partialLines: [10],
+          percentage: 100,
+        },
+        {
+          path: "src/clean-file.rs",
+          coveredLines: [1, 2, 3],
+          missedLines: [],
+          partialLines: [],
+          percentage: 100,
+        },
+      ];
+
+      it("should show patch-specific uncovered lines when patchFileBreakdown is provided", () => {
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown,
+          },
+        );
+
+        // Should show only files with missing or partial lines in the patch
+        expect(comment).toContain("Files with missing lines (2)");
+        expect(comment).toContain("`args.rs`");
+        expect(comment).toContain("2 Missing");
+        expect(comment).toContain("`bytes.rs`");
+        expect(comment).toContain("1 partials");
+        // clean-file.rs has no missing or partial lines in the patch, should be excluded
+        expect(comment).not.toContain("`clean-file.rs`");
+      });
+
+      it("should use patch percentage instead of project lineRate", () => {
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown,
+          },
+        );
+
+        // args.rs should show its patch percentage (83.33%), not the project lineRate
+        expect(comment).toContain("83.33%");
+      });
+
+      it("should show both missing and partial counts for patch files", () => {
+        const mixedBreakdown: PatchFileCoverage[] = [
+          {
+            path: "src/mixed.rs",
+            coveredLines: [1, 2, 3],
+            missedLines: [4, 5],
+            partialLines: [3],
+            percentage: 60,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: mixedBreakdown,
+          },
+        );
+
+        expect(comment).toContain("Files with missing lines (1)");
+        expect(comment).toContain("2 Missing and 1 partials");
+      });
+
+      it("should hide file table when patchFileBreakdown has no files with missing lines", () => {
+        const cleanBreakdown: PatchFileCoverage[] = [
+          {
+            path: "src/clean.rs",
+            coveredLines: [1, 2, 3],
+            missedLines: [],
+            partialLines: [],
+            percentage: 100,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: cleanBreakdown,
+          },
+        );
+
+        expect(comment).not.toContain("Files with missing lines");
+      });
+
+      it("should hide file table when filesMode is none even with patchFileBreakdown", () => {
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            filesMode: "none",
+            patchFileBreakdown,
+          },
+        );
+
+        expect(comment).not.toContain("Files with missing lines");
+      });
+
+      it("should sort patch files by total missing + partial lines descending", () => {
+        const unsortedBreakdown: PatchFileCoverage[] = [
+          {
+            path: "src/few-missing.rs",
+            coveredLines: [1, 2],
+            missedLines: [3],
+            partialLines: [],
+            percentage: 66.67,
+          },
+          {
+            path: "src/many-missing.rs",
+            coveredLines: [1],
+            missedLines: [2, 3, 4],
+            partialLines: [1],
+            percentage: 25,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: unsortedBreakdown,
+          },
+        );
+
+        const manyIdx = comment.indexOf("`many-missing.rs`");
+        const fewIdx = comment.indexOf("`few-missing.rs`");
+        // many-missing.rs (4 total) should appear before few-missing.rs (1 total)
+        expect(manyIdx).toBeLessThan(fewIdx);
+      });
+
+      it("should fall back to project-wide missing lines when no patchFileBreakdown", () => {
+        // This tests the existing behavior is preserved for non-PR contexts
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            filesMode: "all",
+            // No patchFileBreakdown provided
+          },
+        );
+
+        expect(comment).toContain("Files with missing lines (3)");
+        expect(comment).toContain("`changed-file.ts`");
+        expect(comment).toContain("`unchanged-file.ts`");
+        expect(comment).toContain("`dot-prefixed.ts`");
+      });
+
+      it("should still show project uncovered lines in summary when patchFileBreakdown is provided", () => {
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown,
+          },
+        );
+
+        // The summary line should still mention project-wide uncovered lines
+        expect(comment).toContain("Project has **20** uncovered lines.");
+      });
     });
   });
 });
