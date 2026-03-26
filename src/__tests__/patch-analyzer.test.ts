@@ -283,4 +283,62 @@ index 0000000..e69de29
 
     expect(result.unmatchedFiles).toEqual([]);
   });
+
+  it("should track partialLines in file breakdown from file coverage partialLines", () => {
+    const coverageWithPartials: AggregatedCoverageResults = {
+      totalStatements: 100,
+      coveredStatements: 80,
+      totalConditionals: 10,
+      coveredConditionals: 8,
+      totalMethods: 10,
+      coveredMethods: 8,
+      lineRate: 80,
+      branchRate: 80,
+      files: [
+        {
+          name: "utils.ts",
+          path: "src/utils.ts",
+          statements: 10,
+          coveredStatements: 8,
+          conditionals: 2,
+          coveredConditionals: 1,
+          methods: 2,
+          coveredMethods: 2,
+          lineRate: 80,
+          branchRate: 50,
+          lines: [
+            { lineNumber: 13, count: 1, type: "method" },
+            { lineNumber: 14, count: 1, type: "stmt" },
+            { lineNumber: 17, count: 1, type: "method" },
+            { lineNumber: 18, count: 1, type: "cond" },
+            { lineNumber: 19, count: 0, type: "stmt" },
+            { lineNumber: 21, count: 1, type: "stmt" },
+          ],
+          // Line 18 has partial branch coverage
+          partialLines: [18],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      sampleDiff,
+      coverageWithPartials,
+    );
+
+    // Line 18 is covered (count > 0) but is also in partialLines
+    expect(result.fileBreakdown).toHaveLength(1);
+    const file = result.fileBreakdown[0];
+    expect(file.path).toBe("src/utils.ts");
+    expect(file.missedLines).toEqual([19]);
+    expect(file.partialLines).toEqual([18]);
+    // Covered: 13, 14, 17, 18, 21 = 5; Missed: 19 = 1
+    expect(file.coveredLines).toEqual([13, 14, 17, 18, 21]);
+  });
+
+  it("should return empty partialLines when file has no partial coverage", () => {
+    const result = PatchAnalyzer.analyzePatchCoverage(sampleDiff, mockCoverage);
+
+    expect(result.fileBreakdown).toHaveLength(1);
+    expect(result.fileBreakdown[0].partialLines).toEqual([]);
+  });
 });

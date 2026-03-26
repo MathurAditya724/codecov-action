@@ -1,3 +1,4 @@
+import type { PatchFileCoverage } from "../analyzers/patch-analyzer.js";
 import type { CommentFilesMode } from "../types/config.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
 import type {
@@ -9,6 +10,7 @@ export interface ReportFormatOptions {
   filesMode?: CommentFilesMode;
   changedFiles?: string[];
   patchTarget?: number;
+  patchFileBreakdown?: PatchFileCoverage[];
 }
 
 export class ReportFormatter {
@@ -174,39 +176,90 @@ export class ReportFormatter {
     lines.push("");
 
     const filesMode = options.filesMode || "changed";
-    const filesWithMissing = this.getFilesWithMissingLines(results, options);
+    const patchBreakdown = options.patchFileBreakdown;
 
-    if (filesMode !== "none" && filesWithMissing.length > 0) {
-      lines.push("<details>");
-      lines.push(
-        `<summary>Files with missing lines (${filesWithMissing.length})</summary>`,
-      );
-      lines.push("");
-      lines.push("| File | Patch % | Lines |");
-      lines.push("|------|---------|-------|");
+    // When patch file breakdown is available (PR context), use it to show
+    // only the uncovered lines within the diff rather than all project-wide
+    // uncovered lines. This matches the behavior of Codecov's official comments.
+    if (patchBreakdown && filesMode !== "none") {
+      const patchFilesWithMissing = patchBreakdown
+        .filter((f) => f.missedLines.length > 0 || f.partialLines.length > 0)
+        .sort(
+          (a, b) =>
+            b.missedLines.length +
+            b.partialLines.length -
+            (a.missedLines.length + a.partialLines.length),
+        );
 
-      for (const file of filesWithMissing) {
-        const fileName = this.getFileName(file.path);
-        const missingCount = file.missingLines?.length || 0;
-        const partialCount = file.partialLines?.length || 0;
+      if (patchFilesWithMissing.length > 0) {
+        lines.push("<details>");
+        lines.push(
+          `<summary>Files with missing lines (${patchFilesWithMissing.length})</summary>`,
+        );
+        lines.push("");
+        lines.push("| File | Patch % | Lines |");
+        lines.push("|------|---------|-------|");
 
-        let linesText = "";
-        if (missingCount > 0 && partialCount > 0) {
-          linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
-        } else if (missingCount > 0) {
-          linesText = `:warning: ${missingCount} Missing`;
-        } else if (partialCount > 0) {
-          linesText = `:warning: ${partialCount} partials`;
+        for (const file of patchFilesWithMissing) {
+          const fileName = this.getFileName(file.path);
+          const missingCount = file.missedLines.length;
+          const partialCount = file.partialLines.length;
+
+          let linesText = "";
+          if (missingCount > 0 && partialCount > 0) {
+            linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+          } else if (missingCount > 0) {
+            linesText = `:warning: ${missingCount} Missing`;
+          } else if (partialCount > 0) {
+            linesText = `:warning: ${partialCount} partials`;
+          }
+
+          lines.push(
+            `| \`${fileName}\` | ${file.percentage.toFixed(2)}% | ${linesText} |`,
+          );
         }
 
-        lines.push(
-          `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`,
-        );
+        lines.push("");
+        lines.push("</details>");
+        lines.push("");
       }
+    } else if (filesMode !== "none") {
+      // Fallback: no patch breakdown available (push events / non-PR context)
+      // Show project-wide missing lines as before.
+      const filesWithMissing = this.getFilesWithMissingLines(results, options);
 
-      lines.push("");
-      lines.push("</details>");
-      lines.push("");
+      if (filesWithMissing.length > 0) {
+        lines.push("<details>");
+        lines.push(
+          `<summary>Files with missing lines (${filesWithMissing.length})</summary>`,
+        );
+        lines.push("");
+        lines.push("| File | Coverage % | Lines |");
+        lines.push("|------|------------|-------|");
+
+        for (const file of filesWithMissing) {
+          const fileName = this.getFileName(file.path);
+          const missingCount = file.missingLines?.length || 0;
+          const partialCount = file.partialLines?.length || 0;
+
+          let linesText = "";
+          if (missingCount > 0 && partialCount > 0) {
+            linesText = `:warning: ${missingCount} Missing and ${partialCount} partials`;
+          } else if (missingCount > 0) {
+            linesText = `:warning: ${missingCount} Missing`;
+          } else if (partialCount > 0) {
+            linesText = `:warning: ${partialCount} partials`;
+          }
+
+          lines.push(
+            `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`,
+          );
+        }
+
+        lines.push("");
+        lines.push("</details>");
+        lines.push("");
+      }
     }
 
     // Coverage diff (collapsible)

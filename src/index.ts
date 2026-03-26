@@ -410,6 +410,7 @@ async function run() {
             ? patchCoverage?.changedFiles || []
             : undefined,
         patchTarget: patchTargetForFormatter,
+        patchFileBreakdown: patchCoverage?.fileBreakdown,
       };
 
     const summaryReportBody = formatter.formatReport(
