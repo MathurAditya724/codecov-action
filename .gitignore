@@ -13,3 +13,4 @@ report.junit.xml
 .idea
 
 .pnpm-store
+opencode.json*
