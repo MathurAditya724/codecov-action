@@ -1,4 +1,4 @@
-import { CheckCircle, FileCode, Github, TrendingUp } from "lucide-react";
+import { CheckCircle, FileCode, GitBranch, TrendingUp } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -69,7 +69,7 @@ export default function HomePage() {
                 className="flex-1"
               />
               <Button type="submit">
-                <Github className="h-4 w-4 mr-2" />
+                <GitBranch className="h-4 w-4 mr-2" />
                 View
               </Button>
             </form>
