@@ -1,3 +1,7 @@
+## 0.3.1
+
+- Update CHANGELOG.md by @MathurAditya724 in [78a2a4a5](https://github.com/getsentry/codecov-action/commit/78a2a4a5077c33de3a587b64d3462d98b49f9217)
+
 ## 0.3.0
 
 ### New Features ✨
