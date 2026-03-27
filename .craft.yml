@@ -7,5 +7,7 @@ artifactProvider:
     artifacts:
       Build & Test:
         - action-package
+        - gh-pages
 targets:
   - name: github
+  - name: gh-pages

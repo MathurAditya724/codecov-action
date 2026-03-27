@@ -50,3 +50,34 @@ jobs:
         with:
           name: action-package
           path: "*.tgz"
+
+  build_website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build website
+        working-directory: website
+        run: pnpm run build
+
+      - name: Package for gh-pages
+        run: cd website/dist && zip -r ../../gh-pages.zip .
+
+      - name: Upload gh-pages artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gh-pages
+          path: gh-pages.zip
