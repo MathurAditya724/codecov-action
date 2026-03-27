@@ -402,6 +402,17 @@ async function run() {
         ? "all"
         : coverageConfig.config.files;
 
+    // Build GitHub context for linking files to PR diff view
+    const prNumber = githubClient.getPullRequestNumber();
+    const githubContext = prNumber
+      ? {
+          owner: contextInfo.owner,
+          repo: contextInfo.repo,
+          prNumber,
+          serverUrl: process.env.GITHUB_SERVER_URL || "https://github.com",
+        }
+      : undefined;
+
     const reportOptions: import("./formatters/report-formatter.js").ReportFormatOptions =
       {
         filesMode: effectiveFilesMode,
@@ -411,6 +422,7 @@ async function run() {
             : undefined,
         patchTarget: patchTargetForFormatter,
         patchFileBreakdown: patchCoverage?.fileBreakdown,
+        githubContext,
       };
 
     const summaryReportBody = formatter.formatReport(

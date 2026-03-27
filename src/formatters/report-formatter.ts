@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PatchFileCoverage } from "../analyzers/patch-analyzer.js";
 import type { CommentFilesMode } from "../types/config.js";
 import type { AggregatedCoverageResults } from "../types/coverage.js";
@@ -6,11 +7,19 @@ import type {
   TestComparison,
 } from "../types/test-results.js";
 
+export interface GitHubContext {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  serverUrl: string;
+}
+
 export interface ReportFormatOptions {
   filesMode?: CommentFilesMode;
   changedFiles?: string[];
   patchTarget?: number;
   patchFileBreakdown?: PatchFileCoverage[];
+  githubContext?: GitHubContext;
 }
 
 export class ReportFormatter {
@@ -201,7 +210,8 @@ export class ReportFormatter {
         lines.push("|------|---------|-------|");
 
         for (const file of patchFilesWithMissing) {
-          const fileName = this.getFileName(file.path);
+          const filePath = this.normalizeFilePath(file.path);
+          const fileCell = this.formatFileCell(filePath, options.githubContext);
           const missingCount = file.missedLines.length;
           const partialCount = file.partialLines.length;
 
@@ -215,7 +225,7 @@ export class ReportFormatter {
           }
 
           lines.push(
-            `| \`${fileName}\` | ${file.percentage.toFixed(2)}% | ${linesText} |`,
+            `| ${fileCell} | ${file.percentage.toFixed(2)}% | ${linesText} |`,
           );
         }
 
@@ -238,7 +248,12 @@ export class ReportFormatter {
         lines.push("|------|------------|-------|");
 
         for (const file of filesWithMissing) {
-          const fileName = this.getFileName(file.path);
+          const filePath = this.normalizeFilePath(file.path);
+          // Don't generate links for project-wide paths since they may be
+          // absolute (from coverage parsers) and won't produce valid GitHub
+          // diff anchors. Links are only reliable for patch breakdown paths
+          // which come directly from the git diff.
+          const fileCell = this.formatFileCell(filePath);
           const missingCount = file.missingLines?.length || 0;
           const partialCount = file.partialLines?.length || 0;
 
@@ -252,7 +267,7 @@ export class ReportFormatter {
           }
 
           lines.push(
-            `| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`,
+            `| ${fileCell} | ${file.lineRate.toFixed(2)}% | ${linesText} |`,
           );
         }
 
@@ -487,10 +502,24 @@ export class ReportFormatter {
   }
 
   /**
-   * Get just the filename from a path
+   * Format a file path as a markdown table cell, optionally linked to the
+   * GitHub PR diff view when context is available.
    */
-  private getFileName(path: string): string {
-    return path.split("/").pop() || path;
+  private formatFileCell(filePath: string, context?: GitHubContext): string {
+    if (context) {
+      const url = this.buildPrDiffUrl(filePath, context);
+      return `[${filePath}](${url})`;
+    }
+    return `\`${filePath}\``;
+  }
+
+  /**
+   * Build a URL to a file in the GitHub PR diff view.
+   * GitHub anchors each file diff with #diff-{sha256hex(filepath)}.
+   */
+  private buildPrDiffUrl(filePath: string, context: GitHubContext): string {
+    const hash = createHash("sha256").update(filePath).digest("hex");
+    return `${context.serverUrl}/${context.owner}/${context.repo}/pull/${context.prNumber}/files#diff-${hash}`;
   }
 
   /**

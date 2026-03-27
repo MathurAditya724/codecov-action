@@ -351,9 +351,10 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).toContain("Files with missing lines (3)");
-      expect(comment).toContain("`changed-file.ts`");
-      expect(comment).toContain("`unchanged-file.ts`");
-      expect(comment).toContain("`dot-prefixed.ts`");
+      // Full paths should be shown (not just filenames)
+      expect(comment).toContain("`src/changed-file.ts`");
+      expect(comment).toContain("`src/unchanged-file.ts`");
+      expect(comment).toContain("`src/dot-prefixed.ts`");
     });
 
     it("should only show changed files when filesMode is changed", () => {
@@ -367,9 +368,9 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).toContain("Files with missing lines (2)");
-      expect(comment).toContain("`changed-file.ts`");
-      expect(comment).toContain("`dot-prefixed.ts`");
-      expect(comment).not.toContain("`unchanged-file.ts`");
+      expect(comment).toContain("src/changed-file.ts");
+      expect(comment).toContain("src/dot-prefixed.ts");
+      expect(comment).not.toContain("unchanged-file.ts");
     });
 
     it("should match absolute coverage paths when filesMode is changed", () => {
@@ -394,8 +395,11 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).toContain("Files with missing lines (1)");
-      expect(comment).toContain("`changed-file.ts`");
-      expect(comment).not.toContain("`unchanged-file.ts`");
+      // Absolute paths are normalized — leading / and segments before repo root are stripped
+      expect(comment).toContain(
+        "home/runner/work/repo/repo/src/changed-file.ts",
+      );
+      expect(comment).not.toContain("unchanged-file.ts");
     });
 
     it("should match when diff paths are absolute and coverage paths are relative", () => {
@@ -409,8 +413,8 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).toContain("Files with missing lines (1)");
-      expect(comment).toContain("`changed-file.ts`");
-      expect(comment).not.toContain("`unchanged-file.ts`");
+      expect(comment).toContain("src/changed-file.ts");
+      expect(comment).not.toContain("unchanged-file.ts");
     });
 
     it("should only show changed files by default (filesMode defaults to changed)", () => {
@@ -423,9 +427,9 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).toContain("Files with missing lines (1)");
-      expect(comment).toContain("`changed-file.ts`");
-      expect(comment).not.toContain("`unchanged-file.ts`");
-      expect(comment).not.toContain("`dot-prefixed.ts`");
+      expect(comment).toContain("src/changed-file.ts");
+      expect(comment).not.toContain("unchanged-file.ts");
+      expect(comment).not.toContain("dot-prefixed.ts");
     });
 
     it("should hide file table when filesMode is none", () => {
@@ -438,7 +442,7 @@ describe("ReportFormatter", () => {
       );
 
       expect(comment).not.toContain("Files with missing lines");
-      expect(comment).not.toContain("`changed-file.ts`");
+      expect(comment).not.toContain("changed-file.ts");
     });
 
     it("should hide file table when filesMode is changed and changedFiles is empty", () => {
@@ -502,12 +506,13 @@ describe("ReportFormatter", () => {
 
         // Should show only files with missing or partial lines in the patch
         expect(comment).toContain("Files with missing lines (2)");
-        expect(comment).toContain("`args.rs`");
+        // Full paths should be shown
+        expect(comment).toContain("`src/args.rs`");
         expect(comment).toContain("2 Missing");
-        expect(comment).toContain("`bytes.rs`");
+        expect(comment).toContain("`src/types/bytes.rs`");
         expect(comment).toContain("1 partials");
         // clean-file.rs has no missing or partial lines in the patch, should be excluded
-        expect(comment).not.toContain("`clean-file.rs`");
+        expect(comment).not.toContain("clean-file.rs");
       });
 
       it("should use patch percentage instead of project lineRate", () => {
@@ -607,8 +612,8 @@ describe("ReportFormatter", () => {
           },
         );
 
-        const manyIdx = comment.indexOf("`many-missing.rs`");
-        const fewIdx = comment.indexOf("`few-missing.rs`");
+        const manyIdx = comment.indexOf("src/many-missing.rs");
+        const fewIdx = comment.indexOf("src/few-missing.rs");
         // many-missing.rs (4 total) should appear before few-missing.rs (1 total)
         expect(manyIdx).toBeLessThan(fewIdx);
       });
@@ -625,9 +630,9 @@ describe("ReportFormatter", () => {
         );
 
         expect(comment).toContain("Files with missing lines (3)");
-        expect(comment).toContain("`changed-file.ts`");
-        expect(comment).toContain("`unchanged-file.ts`");
-        expect(comment).toContain("`dot-prefixed.ts`");
+        expect(comment).toContain("`src/changed-file.ts`");
+        expect(comment).toContain("`src/unchanged-file.ts`");
+        expect(comment).toContain("`src/dot-prefixed.ts`");
       });
 
       it("should still show project uncovered lines in summary when patchFileBreakdown is provided", () => {
@@ -641,6 +646,157 @@ describe("ReportFormatter", () => {
 
         // The summary line should still mention project-wide uncovered lines
         expect(comment).toContain("Project has **20** uncovered lines.");
+      });
+    });
+
+    describe("File links with githubContext", () => {
+      const githubContext = {
+        owner: "pydantic",
+        repo: "monty",
+        prNumber: 290,
+        serverUrl: "https://github.com",
+      };
+
+      it("should render file names as links to PR diff when githubContext is provided", () => {
+        const patchBreakdown: PatchFileCoverage[] = [
+          {
+            path: "src/changed-file.ts",
+            coveredLines: [1, 2],
+            missedLines: [3],
+            partialLines: [],
+            percentage: 66.67,
+          },
+          {
+            path: "src/unchanged-file.ts",
+            coveredLines: [1],
+            missedLines: [2],
+            partialLines: [],
+            percentage: 50,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: patchBreakdown,
+            githubContext,
+          },
+        );
+
+        // Should contain markdown links, not backtick-formatted names
+        expect(comment).toContain(
+          "[src/changed-file.ts](https://github.com/pydantic/monty/pull/290/files#diff-",
+        );
+        expect(comment).toContain(
+          "[src/unchanged-file.ts](https://github.com/pydantic/monty/pull/290/files#diff-",
+        );
+        // Should NOT contain backtick-only file references in the table
+        expect(comment).not.toContain("`src/changed-file.ts`");
+      });
+
+      it("should render patch breakdown files as links when githubContext is provided", () => {
+        const patchBreakdown: PatchFileCoverage[] = [
+          {
+            path: "crates/monty/src/types/mod.rs",
+            coveredLines: [1, 2],
+            missedLines: [3],
+            partialLines: [],
+            percentage: 66.67,
+          },
+          {
+            path: "crates/monty/src/builtins/mod.rs",
+            coveredLines: [1],
+            missedLines: [2],
+            partialLines: [],
+            percentage: 50,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: patchBreakdown,
+            githubContext,
+          },
+        );
+
+        // Both files should show full paths (disambiguating the two mod.rs files)
+        expect(comment).toContain("crates/monty/src/types/mod.rs");
+        expect(comment).toContain("crates/monty/src/builtins/mod.rs");
+        // Both should be links
+        expect(comment).toContain(
+          "[crates/monty/src/types/mod.rs](https://github.com/pydantic/monty/pull/290/files#diff-",
+        );
+        expect(comment).toContain(
+          "[crates/monty/src/builtins/mod.rs](https://github.com/pydantic/monty/pull/290/files#diff-",
+        );
+      });
+
+      it("should use plain backtick paths without githubContext", () => {
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            filesMode: "all",
+            // No githubContext
+          },
+        );
+
+        // Should use backtick formatting with full paths
+        expect(comment).toContain("`src/changed-file.ts`");
+        expect(comment).not.toContain("[src/changed-file.ts]");
+      });
+
+      it("should use plain backtick paths in fallback even with githubContext", () => {
+        // When there's no patchFileBreakdown (fallback path), coverage parser
+        // paths may be absolute and won't produce valid GitHub diff anchors.
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            filesMode: "all",
+            githubContext,
+            // No patchFileBreakdown — hits fallback path
+          },
+        );
+
+        // Fallback path should NOT generate links
+        expect(comment).toContain("`src/changed-file.ts`");
+        expect(comment).not.toContain("[src/changed-file.ts]");
+      });
+
+      it("should support custom server URL for GHES", () => {
+        const ghesContext = {
+          owner: "org",
+          repo: "repo",
+          prNumber: 42,
+          serverUrl: "https://github.example.com",
+        };
+
+        const patchBreakdown: PatchFileCoverage[] = [
+          {
+            path: "src/changed-file.ts",
+            coveredLines: [1, 2],
+            missedLines: [3],
+            partialLines: [],
+            percentage: 66.67,
+          },
+        ];
+
+        const comment = formatter.formatReport(
+          undefined,
+          coverageWithMissingFiles,
+          {
+            patchFileBreakdown: patchBreakdown,
+            githubContext: ghesContext,
+          },
+        );
+
+        expect(comment).toContain(
+          "[src/changed-file.ts](https://github.example.com/org/repo/pull/42/files#diff-",
+        );
       });
     });
   });
