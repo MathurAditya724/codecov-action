@@ -31,6 +31,7 @@ import require$$6$1 from 'string_decoder';
 import require$$0$f from 'diagnostics_channel';
 import require$$2$6 from 'child_process';
 import require$$6$2 from 'timers';
+import require$$0$g, { createHash } from 'node:crypto';
 import * as fs$1 from 'node:fs/promises';
 import fs__default$1 from 'node:fs/promises';
 import * as os from 'node:os';
@@ -40,7 +41,6 @@ import require$$1$8 from 'node:http';
 import require$$2$8 from 'node:https';
 import require$$3$2 from 'node:zlib';
 import require$$1$9 from 'tty';
-import require$$0$g from 'node:crypto';
 import require$$2$9 from 'node:buffer';
 import require$$1$a from 'fs/promises';
 import require$$0$h from 'constants';
@@ -33143,7 +33143,8 @@ class ReportFormatter {
                 lines.push("| File | Patch % | Lines |");
                 lines.push("|------|---------|-------|");
                 for (const file of patchFilesWithMissing) {
-                    const fileName = this.getFileName(file.path);
+                    const filePath = this.normalizeFilePath(file.path);
+                    const fileCell = this.formatFileCell(filePath, options.githubContext);
                     const missingCount = file.missedLines.length;
                     const partialCount = file.partialLines.length;
                     let linesText = "";
@@ -33156,7 +33157,7 @@ class ReportFormatter {
                     else if (partialCount > 0) {
                         linesText = `:warning: ${partialCount} partials`;
                     }
-                    lines.push(`| \`${fileName}\` | ${file.percentage.toFixed(2)}% | ${linesText} |`);
+                    lines.push(`| ${fileCell} | ${file.percentage.toFixed(2)}% | ${linesText} |`);
                 }
                 lines.push("");
                 lines.push("</details>");
@@ -33174,7 +33175,12 @@ class ReportFormatter {
                 lines.push("| File | Coverage % | Lines |");
                 lines.push("|------|------------|-------|");
                 for (const file of filesWithMissing) {
-                    const fileName = this.getFileName(file.path);
+                    const filePath = this.normalizeFilePath(file.path);
+                    // Don't generate links for project-wide paths since they may be
+                    // absolute (from coverage parsers) and won't produce valid GitHub
+                    // diff anchors. Links are only reliable for patch breakdown paths
+                    // which come directly from the git diff.
+                    const fileCell = this.formatFileCell(filePath);
                     const missingCount = file.missingLines?.length || 0;
                     const partialCount = file.partialLines?.length || 0;
                     let linesText = "";
@@ -33187,7 +33193,7 @@ class ReportFormatter {
                     else if (partialCount > 0) {
                         linesText = `:warning: ${partialCount} partials`;
                     }
-                    lines.push(`| \`${fileName}\` | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
+                    lines.push(`| ${fileCell} | ${file.lineRate.toFixed(2)}% | ${linesText} |`);
                 }
                 lines.push("");
                 lines.push("</details>");
@@ -33320,10 +33326,23 @@ class ReportFormatter {
         lines.push("");
     }
     /**
-     * Get just the filename from a path
+     * Format a file path as a markdown table cell, optionally linked to the
+     * GitHub PR diff view when context is available.
      */
-    getFileName(path) {
-        return path.split("/").pop() || path;
+    formatFileCell(filePath, context) {
+        if (context) {
+            const url = this.buildPrDiffUrl(filePath, context);
+            return `[${filePath}](${url})`;
+        }
+        return `\`${filePath}\``;
+    }
+    /**
+     * Build a URL to a file in the GitHub PR diff view.
+     * GitHub anchors each file diff with #diff-{sha256hex(filepath)}.
+     */
+    buildPrDiffUrl(filePath, context) {
+        const hash = createHash("sha256").update(filePath).digest("hex");
+        return `${context.serverUrl}/${context.owner}/${context.repo}/pull/${context.prNumber}/files#diff-${hash}`;
     }
     /**
      * Format delta value with sign only (no emoji)
@@ -231452,6 +231471,16 @@ async function run() {
         const effectiveFilesMode = coverageConfig.config.files !== "none" && !githubClient.isPullRequest()
             ? "all"
             : coverageConfig.config.files;
+        // Build GitHub context for linking files to PR diff view
+        const prNumber = githubClient.getPullRequestNumber();
+        const githubContext = prNumber
+            ? {
+                owner: contextInfo.owner,
+                repo: contextInfo.repo,
+                prNumber,
+                serverUrl: process.env.GITHUB_SERVER_URL || "https://github.com",
+            }
+            : undefined;
         const reportOptions = {
             filesMode: effectiveFilesMode,
             changedFiles: effectiveFilesMode === "changed"
@@ -231459,6 +231488,7 @@ async function run() {
                 : undefined,
             patchTarget: patchTargetForFormatter,
             patchFileBreakdown: patchCoverage?.fileBreakdown,
+            githubContext,
         };
         const summaryReportBody = formatter.formatReport(aggregatedTestResults || undefined, aggregatedCoverageResults || undefined, reportOptions);
         // Write Job Summary (always)
