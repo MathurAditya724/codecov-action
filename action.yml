@@ -58,6 +58,9 @@ inputs:
   base-branch:
     description: "Base branch to compare results against. Auto-detects the repo's default branch if not specified"
     required: false
+  base-sha:
+    description: "Optional explicit base commit SHA to compare against. If provided, looks for workflow runs matching this SHA first, then falls back to base-branch."
+    required: false
 
   # Test results
   junit-xml-pattern:

@@ -204,11 +204,56 @@ export class ArtifactManager {
   }
 
   /**
+   * Fetch valid completed workflow runs, optionally trying a specific commit
+   * SHA first and falling back to the base branch.
+   */
+  private async fetchValidWorkflowRuns(
+    baseBranch: string,
+    baseSha?: string,
+  ) {
+    // If a specific SHA was requested, try it first
+    if (baseSha) {
+      core.info(`   Looking for specific commit SHA: ${baseSha}`);
+      const shaResponse =
+        await this.octokit.rest.actions.listWorkflowRunsForRepo({
+          owner: this.owner,
+          repo: this.repo,
+          head_sha: baseSha,
+          status: "completed",
+          per_page: 10,
+        });
+      const shaRuns = shaResponse.data.workflow_runs.filter(
+        (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
+      );
+      if (shaRuns.length > 0) {
+        return shaRuns;
+      }
+      core.info(
+        `ℹ️ No completed workflow runs found for SHA '${baseSha}'. Falling back to branch '${baseBranch}'`,
+      );
+    }
+
+    // Fall back to branch-based lookup
+    const branchResponse =
+      await this.octokit.rest.actions.listWorkflowRunsForRepo({
+        owner: this.owner,
+        repo: this.repo,
+        branch: baseBranch,
+        status: "completed",
+        per_page: 10,
+      });
+    return branchResponse.data.workflow_runs.filter(
+      (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
+    );
+  }
+
+  /**
    * Download test results from a base branch artifact using GitHub API
    */
   async downloadBaseResults(
     baseBranch: string,
     name?: string,
+    baseSha?: string,
   ): Promise<AggregatedTestResults | null> {
     try {
       const artifactName = this.getArtifactName(
@@ -242,24 +287,7 @@ export class ArtifactManager {
         `📥 Attempting to download base test results: ${artifactNamesToTry[0]}`,
       );
 
-      // Find the latest completed workflow run on the base branch.
-      // We use "completed" instead of "success" because the overall workflow
-      // conclusion may be "failure" due to unrelated jobs failing, even when
-      // the job that uploaded the coverage artifact succeeded.
-      const workflowRunsResponse =
-        await this.octokit.rest.actions.listWorkflowRunsForRepo({
-          owner: this.owner,
-          repo: this.repo,
-          branch: baseBranch,
-          status: "completed",
-          per_page: 10,
-        });
-
-      // Filter to runs with valid conclusions (success, failure) — exclude
-      // cancelled/timed_out runs that may have incomplete artifacts.
-      const validRuns = workflowRunsResponse.data.workflow_runs.filter(
-        (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
-      );
+      const validRuns = await this.fetchValidWorkflowRuns(baseBranch, baseSha);
 
       if (validRuns.length === 0) {
         core.info(
@@ -335,11 +363,13 @@ export class ArtifactManager {
    * @param baseBranch The base branch to download from
    * @param flags Optional flags to match specific flagged coverage
    * @param name Optional name to match specific named coverage (e.g., from matrix builds)
+   * @param baseSha Optional specific commit SHA to look for first
    */
   async downloadBaseCoverageResults(
     baseBranch: string,
     flags?: string[],
     name?: string,
+    baseSha?: string,
   ): Promise<AggregatedCoverageResults | null> {
     try {
       // Build a list of artifact names to try, in order of preference:
@@ -385,24 +415,7 @@ export class ArtifactManager {
         core.info(`   Looking for flags: ${flags.join(", ")}`);
       }
 
-      // Find the latest completed workflow run on the base branch.
-      // We use "completed" instead of "success" because the overall workflow
-      // conclusion may be "failure" due to unrelated jobs failing, even when
-      // the job that uploaded the coverage artifact succeeded.
-      const workflowRunsResponse =
-        await this.octokit.rest.actions.listWorkflowRunsForRepo({
-          owner: this.owner,
-          repo: this.repo,
-          branch: baseBranch,
-          status: "completed",
-          per_page: 10,
-        });
-
-      // Filter to runs with valid conclusions (success, failure) — exclude
-      // cancelled/timed_out runs that may have incomplete artifacts.
-      const validRuns = workflowRunsResponse.data.workflow_runs.filter(
-        (r) => r.conclusion && VALID_RUN_CONCLUSIONS.has(r.conclusion),
-      );
+      const validRuns = await this.fetchValidWorkflowRuns(baseBranch, baseSha);
 
       if (validRuns.length === 0) {
         core.info(

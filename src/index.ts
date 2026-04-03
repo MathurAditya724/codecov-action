@@ -179,6 +179,7 @@ async function run() {
       core.getInput("junit-xml-pattern") || "**/*.junit.xml";
     const token = core.getInput("token");
     const baseBranchInput = core.getInput("base-branch");
+    const baseSha = core.getInput("base-sha") || undefined;
     const enableTests = core.getBooleanInput("enable-tests") !== false;
     const enableCoverage = core.getBooleanInput("enable-coverage") !== false;
     const postPrComment = core.getBooleanInput("post-pr-comment") === true;
@@ -236,6 +237,7 @@ async function run() {
         currentBranch,
         baseBranch,
         coverageConfig.name || undefined,
+        baseSha,
       );
     }
 
@@ -252,6 +254,7 @@ async function run() {
         artifactManager,
         currentBranch,
         baseBranch,
+        baseSha,
       );
 
       // Run threshold checks if coverage results are available
@@ -468,6 +471,7 @@ async function processTestResults(
   currentBranch: string,
   baseBranch: string,
   name?: string,
+  baseSha?: string,
 ) {
   core.info("📊 Processing test results...");
 
@@ -536,6 +540,7 @@ async function processTestResults(
   const baseResults = await artifactManager.downloadBaseResults(
     baseBranch,
     name,
+    baseSha,
   );
   if (baseResults) {
     core.info("🔍 Comparing with base branch test results...");
@@ -667,6 +672,7 @@ async function processCoverage(
   artifactManager: ArtifactManager,
   currentBranch: string,
   baseBranch: string,
+  baseSha?: string,
 ) {
   const { format, failCiIfError, handleNoReportsFound, verbose, flags, name } =
     config;
@@ -820,6 +826,7 @@ async function processCoverage(
     baseBranch,
     flags.length > 0 ? flags : undefined,
     name || undefined,
+    baseSha,
   );
   if (baseCoverage) {
     core.info("🔍 Comparing with base branch coverage...");
