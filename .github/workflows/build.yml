@@ -7,10 +7,6 @@ on:
       - main
       - "release/**"
 
-concurrency:
-  group: build-${{ github.sha }}
-  cancel-in-progress: true
-
 jobs:
   test_job:
     runs-on: ubuntu-latest
