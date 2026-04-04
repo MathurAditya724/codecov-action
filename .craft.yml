@@ -4,10 +4,6 @@ changelog:
   policy: auto
 statusProvider:
   name: github
-  config:
-    contexts:
-      - test_job
-      - build_website
 artifactProvider:
   name: github
   config:
