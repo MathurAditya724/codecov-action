@@ -1,4 +1,5 @@
 minVersion: "2.21.2"
+noMerge: false
 changelog:
   policy: auto
 statusProvider:
