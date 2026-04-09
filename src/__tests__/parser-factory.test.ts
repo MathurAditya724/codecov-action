@@ -128,6 +128,9 @@ github.com/user/project/file.go:1.1,3.2 1 1
       expect(
         CoverageParserFactory.detectFormatFromPath("cobertura-coverage.xml")
       ).toBe("cobertura");
+      expect(
+        CoverageParserFactory.detectFormatFromPath("coverage.cobertura.xml")
+      ).toBe("cobertura");
     });
 
     it("should detect JaCoCo from path", () => {

@@ -617,6 +617,7 @@ async function findCoverageFiles(config: CoverageConfig): Promise<string[]> {
   const defaultPatterns = [
     "**/clover.xml",
     "**/cobertura.xml",
+    "**/coverage.cobertura.xml",
     "**/coverage.xml",
     "**/jacoco.xml",
     "**/lcov.info",
