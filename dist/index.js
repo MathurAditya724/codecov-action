@@ -34072,10 +34072,10 @@ function normalizeProcessEntities(value) {
     return {
       enabled: value.enabled !== false,
       maxEntitySize: Math.max(1, value.maxEntitySize ?? 10000),
-      maxExpansionDepth: Math.max(1, value.maxExpansionDepth ?? 10),
-      maxTotalExpansions: Math.max(1, value.maxTotalExpansions ?? 1000),
+      maxExpansionDepth: Math.max(1, value.maxExpansionDepth ?? 10000),
+      maxTotalExpansions: Math.max(1, value.maxTotalExpansions ?? Infinity),
       maxExpandedLength: Math.max(1, value.maxExpandedLength ?? 100000),
-      maxEntityCount: Math.max(1, value.maxEntityCount ?? 100),
+      maxEntityCount: Math.max(1, value.maxEntityCount ?? 1000),
       allowedTags: value.allowedTags ?? null,
       tagFilter: value.tagFilter ?? null
     };
@@ -34109,7 +34109,7 @@ const buildOptions = function (options) {
 
   // Always normalize processEntities for backward compatibility and validation
   built.processEntities = normalizeProcessEntities(built.processEntities);
-
+  built.unpairedTagsSet = new Set(built.unpairedTags);
   // Convert old-style stopNodes for backward compatibility
   if (built.stopNodes && Array.isArray(built.stopNodes)) {
     built.stopNodes = built.stopNodes.map(node => {
@@ -34595,8 +34595,9 @@ function toNumber(str, options = {}) {
 
     let trimmedStr = str.trim();
 
-    if (options.skipLike !== undefined && options.skipLike.test(trimmedStr)) return str;
-    else if (str === "0") return 0;
+    if (trimmedStr.length === 0) return str;
+    else if (options.skipLike !== undefined && options.skipLike.test(trimmedStr)) return str;
+    else if (trimmedStr === "0") return 0;
     else if (options.hex && hexRegex.test(trimmedStr)) {
         return parse_int(trimmedStr, 16);
         // }else if (options.oct && octRegex.test(str)) {
@@ -34770,11 +34771,11 @@ class Expression {
    * @param {Object} options - Configuration options
    * @param {string} options.separator - Path separator (default: '.')
    */
-  constructor(pattern, options = {}) {
+  constructor(pattern, options = {}, data) {
     this.pattern = pattern;
     this.separator = options.separator || '.';
     this.segments = this._parse(pattern);
-
+    this.data = data;
     // Cache expensive checks for performance (O(1) instead of O(n))
     this._hasDeepWildcard = this.segments.some(seg => seg.type === 'deep-wildcard');
     this._hasAttributeCondition = this.segments.some(seg => seg.attrName !== undefined);
@@ -34987,47 +34988,413 @@ class Expression {
 }
 
 /**
- * Matcher - Tracks current path in XML/JSON tree and matches against Expressions
- * 
+ * ExpressionSet - An indexed collection of Expressions for efficient bulk matching
+ *
+ * Instead of iterating all expressions on every tag, ExpressionSet pre-indexes
+ * them at insertion time by depth and terminal tag name. At match time, only
+ * the relevant bucket is evaluated — typically reducing checks from O(E) to O(1)
+ * lookup plus O(small bucket) matches.
+ *
+ * Three buckets are maintained:
+ *  - `_byDepthAndTag`  — exact depth + exact tag name  (tightest, used first)
+ *  - `_wildcardByDepth` — exact depth + wildcard tag `*` (depth-matched only)
+ *  - `_deepWildcards`  — expressions containing `..`  (cannot be depth-indexed)
+ *
+ * @example
+ * import { Expression, ExpressionSet } from 'fast-xml-tagger';
+ *
+ * // Build once at config time
+ * const stopNodes = new ExpressionSet();
+ * stopNodes.add(new Expression('root.users.user'));
+ * stopNodes.add(new Expression('root.config.setting'));
+ * stopNodes.add(new Expression('..script'));
+ *
+ * // Query on every tag — hot path
+ * if (stopNodes.matchesAny(matcher)) { ... }
+ */
+class ExpressionSet {
+  constructor() {
+    /** @type {Map<string, import('./Expression.js').default[]>} depth:tag → expressions */
+    this._byDepthAndTag = new Map();
+
+    /** @type {Map<number, import('./Expression.js').default[]>} depth → wildcard-tag expressions */
+    this._wildcardByDepth = new Map();
+
+    /** @type {import('./Expression.js').default[]} expressions containing deep wildcard (..) */
+    this._deepWildcards = [];
+
+    /** @type {Set<string>} pattern strings already added — used for deduplication */
+    this._patterns = new Set();
+
+    /** @type {boolean} whether the set is sealed against further additions */
+    this._sealed = false;
+  }
+
+  /**
+   * Add an Expression to the set.
+   * Duplicate patterns (same pattern string) are silently ignored.
+   *
+   * @param {import('./Expression.js').default} expression - A pre-constructed Expression instance
+   * @returns {this} for chaining
+   * @throws {TypeError} if called after seal()
+   *
+   * @example
+   * set.add(new Expression('root.users.user'));
+   * set.add(new Expression('..script'));
+   */
+  add(expression) {
+    if (this._sealed) {
+      throw new TypeError(
+        'ExpressionSet is sealed. Create a new ExpressionSet to add more expressions.'
+      );
+    }
+
+    // Deduplicate by pattern string
+    if (this._patterns.has(expression.pattern)) return this;
+    this._patterns.add(expression.pattern);
+
+    if (expression.hasDeepWildcard()) {
+      this._deepWildcards.push(expression);
+      return this;
+    }
+
+    const depth = expression.length;
+    const lastSeg = expression.segments[expression.segments.length - 1];
+    const tag = lastSeg?.tag;
+
+    if (!tag || tag === '*') {
+      // Can index by depth but not by tag
+      if (!this._wildcardByDepth.has(depth)) this._wildcardByDepth.set(depth, []);
+      this._wildcardByDepth.get(depth).push(expression);
+    } else {
+      // Tightest bucket: depth + tag
+      const key = `${depth}:${tag}`;
+      if (!this._byDepthAndTag.has(key)) this._byDepthAndTag.set(key, []);
+      this._byDepthAndTag.get(key).push(expression);
+    }
+
+    return this;
+  }
+
+  /**
+   * Add multiple expressions at once.
+   *
+   * @param {import('./Expression.js').default[]} expressions - Array of Expression instances
+   * @returns {this} for chaining
+   *
+   * @example
+   * set.addAll([
+   *   new Expression('root.users.user'),
+   *   new Expression('root.config.setting'),
+   * ]);
+   */
+  addAll(expressions) {
+    for (const expr of expressions) this.add(expr);
+    return this;
+  }
+
+  /**
+   * Check whether a pattern string is already present in the set.
+   *
+   * @param {import('./Expression.js').default} expression
+   * @returns {boolean}
+   */
+  has(expression) {
+    return this._patterns.has(expression.pattern);
+  }
+
+  /**
+   * Number of expressions in the set.
+   * @type {number}
+   */
+  get size() {
+    return this._patterns.size;
+  }
+
+  /**
+   * Seal the set against further modifications.
+   * Useful to prevent accidental mutations after config is built.
+   * Calling add() or addAll() on a sealed set throws a TypeError.
+   *
+   * @returns {this}
+   */
+  seal() {
+    this._sealed = true;
+    return this;
+  }
+
+  /**
+   * Whether the set has been sealed.
+   * @type {boolean}
+   */
+  get isSealed() {
+    return this._sealed;
+  }
+
+  /**
+   * Test whether the matcher's current path matches any expression in the set.
+   *
+   * Evaluation order (cheapest → most expensive):
+   *  1. Exact depth + tag bucket  — O(1) lookup, typically 0–2 expressions
+   *  2. Depth-only wildcard bucket — O(1) lookup, rare
+   *  3. Deep-wildcard list         — always checked, but usually small
+   *
+   * @param {import('./Matcher.js').default} matcher - Matcher instance (or readOnly view)
+   * @returns {boolean} true if any expression matches the current path
+   *
+   * @example
+   * if (stopNodes.matchesAny(matcher)) {
+   *   // handle stop node
+   * }
+   */
+  matchesAny(matcher) {
+    return this.findMatch(matcher) !== null;
+  }
+  /**
+ * Find and return the first Expression that matches the matcher's current path.
+ *
+ * Uses the same evaluation order as matchesAny (cheapest → most expensive):
+ *  1. Exact depth + tag bucket
+ *  2. Depth-only wildcard bucket
+ *  3. Deep-wildcard list
+ *
+ * @param {import('./Matcher.js').default} matcher - Matcher instance (or readOnly view)
+ * @returns {import('./Expression.js').default | null} the first matching Expression, or null
+ *
+ * @example
+ * const expr = stopNodes.findMatch(matcher);
+ * if (expr) {
+ *   // access expr.config, expr.pattern, etc.
+ * }
+ */
+  findMatch(matcher) {
+    const depth = matcher.getDepth();
+    const tag = matcher.getCurrentTag();
+
+    // 1. Tightest bucket — most expressions live here
+    const exactKey = `${depth}:${tag}`;
+    const exactBucket = this._byDepthAndTag.get(exactKey);
+    if (exactBucket) {
+      for (let i = 0; i < exactBucket.length; i++) {
+        if (matcher.matches(exactBucket[i])) return exactBucket[i];
+      }
+    }
+
+    // 2. Depth-matched wildcard-tag expressions
+    const wildcardBucket = this._wildcardByDepth.get(depth);
+    if (wildcardBucket) {
+      for (let i = 0; i < wildcardBucket.length; i++) {
+        if (matcher.matches(wildcardBucket[i])) return wildcardBucket[i];
+      }
+    }
+
+    // 3. Deep wildcards — cannot be pre-filtered by depth or tag
+    for (let i = 0; i < this._deepWildcards.length; i++) {
+      if (matcher.matches(this._deepWildcards[i])) return this._deepWildcards[i];
+    }
+
+    return null;
+  }
+}
+
+/**
+ * MatcherView - A lightweight read-only view over a Matcher's internal state.
+ *
+ * Created once by Matcher and reused across all callbacks. Holds a direct
+ * reference to the parent Matcher so it always reflects current parser state
+ * with zero copying or freezing overhead.
+ *
+ * Users receive this via {@link Matcher#readOnly} or directly from parser
+ * callbacks. It exposes all query and matching methods but has no mutation
+ * methods — misuse is caught at the TypeScript level rather than at runtime.
+ *
+ * @example
+ * const matcher = new Matcher();
+ * const view = matcher.readOnly();
+ *
+ * matcher.push("root", {});
+ * view.getCurrentTag(); // "root"
+ * view.getDepth();      // 1
+ */
+class MatcherView {
+  /**
+   * @param {Matcher} matcher - The parent Matcher instance to read from.
+   */
+  constructor(matcher) {
+    this._matcher = matcher;
+  }
+
+  /**
+   * Get the path separator used by the parent matcher.
+   * @returns {string}
+   */
+  get separator() {
+    return this._matcher.separator;
+  }
+
+  /**
+   * Get current tag name.
+   * @returns {string|undefined}
+   */
+  getCurrentTag() {
+    const path = this._matcher.path;
+    return path.length > 0 ? path[path.length - 1].tag : undefined;
+  }
+
+  /**
+   * Get current namespace.
+   * @returns {string|undefined}
+   */
+  getCurrentNamespace() {
+    const path = this._matcher.path;
+    return path.length > 0 ? path[path.length - 1].namespace : undefined;
+  }
+
+  /**
+   * Get current node's attribute value.
+   * @param {string} attrName
+   * @returns {*}
+   */
+  getAttrValue(attrName) {
+    const path = this._matcher.path;
+    if (path.length === 0) return undefined;
+    return path[path.length - 1].values?.[attrName];
+  }
+
+  /**
+   * Check if current node has an attribute.
+   * @param {string} attrName
+   * @returns {boolean}
+   */
+  hasAttr(attrName) {
+    const path = this._matcher.path;
+    if (path.length === 0) return false;
+    const current = path[path.length - 1];
+    return current.values !== undefined && attrName in current.values;
+  }
+
+  /**
+   * Get current node's sibling position (child index in parent).
+   * @returns {number}
+   */
+  getPosition() {
+    const path = this._matcher.path;
+    if (path.length === 0) return -1;
+    return path[path.length - 1].position ?? 0;
+  }
+
+  /**
+   * Get current node's repeat counter (occurrence count of this tag name).
+   * @returns {number}
+   */
+  getCounter() {
+    const path = this._matcher.path;
+    if (path.length === 0) return -1;
+    return path[path.length - 1].counter ?? 0;
+  }
+
+  /**
+   * Get current node's sibling index (alias for getPosition).
+   * @returns {number}
+   * @deprecated Use getPosition() or getCounter() instead
+   */
+  getIndex() {
+    return this.getPosition();
+  }
+
+  /**
+   * Get current path depth.
+   * @returns {number}
+   */
+  getDepth() {
+    return this._matcher.path.length;
+  }
+
+  /**
+   * Get path as string.
+   * @param {string} [separator] - Optional separator (uses default if not provided)
+   * @param {boolean} [includeNamespace=true]
+   * @returns {string}
+   */
+  toString(separator, includeNamespace = true) {
+    return this._matcher.toString(separator, includeNamespace);
+  }
+
+  /**
+   * Get path as array of tag names.
+   * @returns {string[]}
+   */
+  toArray() {
+    return this._matcher.path.map(n => n.tag);
+  }
+
+  /**
+   * Match current path against an Expression.
+   * @param {Expression} expression
+   * @returns {boolean}
+   */
+  matches(expression) {
+    return this._matcher.matches(expression);
+  }
+
+  /**
+   * Match any expression in the given set against the current path.
+   * @param {ExpressionSet} exprSet
+   * @returns {boolean}
+   */
+  matchesAny(exprSet) {
+    return exprSet.matchesAny(this._matcher);
+  }
+}
+
+/**
+ * Matcher - Tracks current path in XML/JSON tree and matches against Expressions.
+ *
  * The matcher maintains a stack of nodes representing the current path from root to
  * current tag. It only stores attribute values for the current (top) node to minimize
  * memory usage. Sibling tracking is used to auto-calculate position and counter.
- * 
+ *
+ * Use {@link Matcher#readOnly} to obtain a {@link MatcherView} safe to pass to
+ * user callbacks — it always reflects current state with no Proxy overhead.
+ *
  * @example
  * const matcher = new Matcher();
  * matcher.push("root", {});
  * matcher.push("users", {});
  * matcher.push("user", { id: "123", type: "admin" });
- * 
+ *
  * const expr = new Expression("root.users.user");
  * matcher.matches(expr); // true
  */
 class Matcher {
   /**
-   * Create a new Matcher
-   * @param {Object} options - Configuration options
-   * @param {string} options.separator - Default path separator (default: '.')
+   * Create a new Matcher.
+   * @param {Object} [options={}]
+   * @param {string} [options.separator='.'] - Default path separator
    */
   constructor(options = {}) {
     this.separator = options.separator || '.';
     this.path = [];
     this.siblingStacks = [];
-    // Each path node: { tag: string, values: object, position: number, counter: number }
+    // Each path node: { tag, values, position, counter, namespace? }
     // values only present for current (last) node
     // Each siblingStacks entry: Map<tagName, count> tracking occurrences at each level
+    this._pathStringCache = null;
+    this._view = new MatcherView(this);
   }
 
   /**
-   * Push a new tag onto the path
-   * @param {string} tagName - Name of the tag
-   * @param {Object} attrValues - Attribute key-value pairs for current node (optional)
-   * @param {string} namespace - Namespace for the tag (optional)
+   * Push a new tag onto the path.
+   * @param {string} tagName
+   * @param {Object|null} [attrValues=null]
+   * @param {string|null} [namespace=null]
    */
   push(tagName, attrValues = null, namespace = null) {
+    this._pathStringCache = null;
+
     // Remove values from previous current node (now becoming ancestor)
     if (this.path.length > 0) {
-      const prev = this.path[this.path.length - 1];
-      prev.values = undefined;
+      this.path[this.path.length - 1].values = undefined;
     }
 
     // Get or create sibling tracking for current level
@@ -35060,12 +35427,10 @@ class Matcher {
       counter: counter
     };
 
-    // Store namespace if provided
     if (namespace !== null && namespace !== undefined) {
       node.namespace = namespace;
     }
 
-    // Store values only for current node
     if (attrValues !== null && attrValues !== undefined) {
       node.values = attrValues;
     }
@@ -35074,19 +35439,15 @@ class Matcher {
   }
 
   /**
-   * Pop the last tag from the path
+   * Pop the last tag from the path.
    * @returns {Object|undefined} The popped node
    */
   pop() {
-    if (this.path.length === 0) {
-      return undefined;
-    }
+    if (this.path.length === 0) return undefined;
+    this._pathStringCache = null;
 
     const node = this.path.pop();
 
-    // Clean up sibling tracking for levels deeper than current
-    // After pop, path.length is the new depth
-    // We need to clean up siblingStacks[path.length + 1] and beyond
     if (this.siblingStacks.length > this.path.length + 1) {
       this.siblingStacks.length = this.path.length + 1;
     }
@@ -35095,9 +35456,9 @@ class Matcher {
   }
 
   /**
-   * Update current node's attribute values
-   * Useful when attributes are parsed after push
-   * @param {Object} attrValues - Attribute values
+   * Update current node's attribute values.
+   * Useful when attributes are parsed after push.
+   * @param {Object} attrValues
    */
   updateCurrent(attrValues) {
     if (this.path.length > 0) {
@@ -35109,7 +35470,7 @@ class Matcher {
   }
 
   /**
-   * Get current tag name
+   * Get current tag name.
    * @returns {string|undefined}
    */
   getCurrentTag() {
@@ -35117,7 +35478,7 @@ class Matcher {
   }
 
   /**
-   * Get current namespace
+   * Get current namespace.
    * @returns {string|undefined}
    */
   getCurrentNamespace() {
@@ -35125,19 +35486,18 @@ class Matcher {
   }
 
   /**
-   * Get current node's attribute value
-   * @param {string} attrName - Attribute name
-   * @returns {*} Attribute value or undefined
+   * Get current node's attribute value.
+   * @param {string} attrName
+   * @returns {*}
    */
   getAttrValue(attrName) {
     if (this.path.length === 0) return undefined;
-    const current = this.path[this.path.length - 1];
-    return current.values?.[attrName];
+    return this.path[this.path.length - 1].values?.[attrName];
   }
 
   /**
-   * Check if current node has an attribute
-   * @param {string} attrName - Attribute name
+   * Check if current node has an attribute.
+   * @param {string} attrName
    * @returns {boolean}
    */
   hasAttr(attrName) {
@@ -35147,7 +35507,7 @@ class Matcher {
   }
 
   /**
-   * Get current node's sibling position (child index in parent)
+   * Get current node's sibling position (child index in parent).
    * @returns {number}
    */
   getPosition() {
@@ -35156,7 +35516,7 @@ class Matcher {
   }
 
   /**
-   * Get current node's repeat counter (occurrence count of this tag name)
+   * Get current node's repeat counter (occurrence count of this tag name).
    * @returns {number}
    */
   getCounter() {
@@ -35165,7 +35525,7 @@ class Matcher {
   }
 
   /**
-   * Get current node's sibling index (alias for getPosition for backward compatibility)
+   * Get current node's sibling index (alias for getPosition).
    * @returns {number}
    * @deprecated Use getPosition() or getCounter() instead
    */
@@ -35174,7 +35534,7 @@ class Matcher {
   }
 
   /**
-   * Get current path depth
+   * Get current path depth.
    * @returns {number}
    */
   getDepth() {
@@ -35182,23 +35542,33 @@ class Matcher {
   }
 
   /**
-   * Get path as string
-   * @param {string} separator - Optional separator (uses default if not provided)
-   * @param {boolean} includeNamespace - Whether to include namespace in output (default: true)
+   * Get path as string.
+   * @param {string} [separator] - Optional separator (uses default if not provided)
+   * @param {boolean} [includeNamespace=true]
    * @returns {string}
    */
   toString(separator, includeNamespace = true) {
     const sep = separator || this.separator;
-    return this.path.map(n => {
-      if (includeNamespace && n.namespace) {
-        return `${n.namespace}:${n.tag}`;
+    const isDefault = (sep === this.separator && includeNamespace === true);
+
+    if (isDefault) {
+      if (this._pathStringCache !== null) {
+        return this._pathStringCache;
       }
-      return n.tag;
-    }).join(sep);
+      const result = this.path.map(n =>
+        (n.namespace) ? `${n.namespace}:${n.tag}` : n.tag
+      ).join(sep);
+      this._pathStringCache = result;
+      return result;
+    }
+
+    return this.path.map(n =>
+      (includeNamespace && n.namespace) ? `${n.namespace}:${n.tag}` : n.tag
+    ).join(sep);
   }
 
   /**
-   * Get path as array of tag names
+   * Get path as array of tag names.
    * @returns {string[]}
    */
   toArray() {
@@ -35206,17 +35576,18 @@ class Matcher {
   }
 
   /**
-   * Reset the path to empty
+   * Reset the path to empty.
    */
   reset() {
+    this._pathStringCache = null;
     this.path = [];
     this.siblingStacks = [];
   }
 
   /**
-   * Match current path against an Expression
-   * @param {Expression} expression - The expression to match against
-   * @returns {boolean} True if current path matches the expression
+   * Match current path against an Expression.
+   * @param {Expression} expression
+   * @returns {boolean}
    */
   matches(expression) {
     const segments = expression.segments;
@@ -35225,32 +35596,23 @@ class Matcher {
       return false;
     }
 
-    // Handle deep wildcard patterns
     if (expression.hasDeepWildcard()) {
       return this._matchWithDeepWildcard(segments);
     }
 
-    // Simple path matching (no deep wildcards)
     return this._matchSimple(segments);
   }
 
   /**
-   * Match simple path (no deep wildcards)
    * @private
    */
   _matchSimple(segments) {
-    // Path must be same length as segments
     if (this.path.length !== segments.length) {
       return false;
     }
 
-    // Match each segment bottom-to-top
     for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const node = this.path[i];
-      const isCurrentNode = (i === this.path.length - 1);
-
-      if (!this._matchSegment(segment, node, isCurrentNode)) {
+      if (!this._matchSegment(segments[i], this.path[i], i === this.path.length - 1)) {
         return false;
       }
     }
@@ -35259,32 +35621,27 @@ class Matcher {
   }
 
   /**
-   * Match path with deep wildcards
    * @private
    */
   _matchWithDeepWildcard(segments) {
-    let pathIdx = this.path.length - 1;  // Start from current node (bottom)
-    let segIdx = segments.length - 1;     // Start from last segment
+    let pathIdx = this.path.length - 1;
+    let segIdx = segments.length - 1;
 
     while (segIdx >= 0 && pathIdx >= 0) {
       const segment = segments[segIdx];
 
       if (segment.type === 'deep-wildcard') {
-        // ".." matches zero or more levels
         segIdx--;
 
         if (segIdx < 0) {
-          // Pattern ends with "..", always matches
           return true;
         }
 
-        // Find where next segment matches in the path
         const nextSeg = segments[segIdx];
         let found = false;
 
         for (let i = pathIdx; i >= 0; i--) {
-          const isCurrentNode = (i === this.path.length - 1);
-          if (this._matchSegment(nextSeg, this.path[i], isCurrentNode)) {
+          if (this._matchSegment(nextSeg, this.path[i], i === this.path.length - 1)) {
             pathIdx = i - 1;
             segIdx--;
             found = true;
@@ -35296,9 +35653,7 @@ class Matcher {
           return false;
         }
       } else {
-        // Regular segment
-        const isCurrentNode = (pathIdx === this.path.length - 1);
-        if (!this._matchSegment(segment, this.path[pathIdx], isCurrentNode)) {
+        if (!this._matchSegment(segment, this.path[pathIdx], pathIdx === this.path.length - 1)) {
           return false;
         }
         pathIdx--;
@@ -35306,38 +35661,25 @@ class Matcher {
       }
     }
 
-    // All segments must be consumed
     return segIdx < 0;
   }
 
   /**
-   * Match a single segment against a node
    * @private
-   * @param {Object} segment - Segment from Expression
-   * @param {Object} node - Node from path
-   * @param {boolean} isCurrentNode - Whether this is the current (last) node
-   * @returns {boolean}
    */
   _matchSegment(segment, node, isCurrentNode) {
-    // Match tag name (* is wildcard)
     if (segment.tag !== '*' && segment.tag !== node.tag) {
       return false;
     }
 
-    // Match namespace if specified in segment
     if (segment.namespace !== undefined) {
-      // Segment has namespace - node must match it
       if (segment.namespace !== '*' && segment.namespace !== node.namespace) {
         return false;
       }
     }
-    // If segment has no namespace, it matches nodes with or without namespace
 
-    // Match attribute name (check if node has this attribute)
-    // Can only check for current node since ancestors don't have values
     if (segment.attrName !== undefined) {
       if (!isCurrentNode) {
-        // Can't check attributes for ancestor nodes (values not stored)
         return false;
       }
 
@@ -35345,20 +35687,15 @@ class Matcher {
         return false;
       }
 
-      // Match attribute value (only possible for current node)
       if (segment.attrValue !== undefined) {
-        const actualValue = node.values[segment.attrName];
-        // Both should be strings
-        if (String(actualValue) !== String(segment.attrValue)) {
+        if (String(node.values[segment.attrName]) !== String(segment.attrValue)) {
           return false;
         }
       }
     }
 
-    // Match position (only for current node)
     if (segment.position !== undefined) {
       if (!isCurrentNode) {
-        // Can't check position for ancestor nodes
         return false;
       }
 
@@ -35370,10 +35707,8 @@ class Matcher {
         return false;
       } else if (segment.position === 'even' && counter % 2 !== 0) {
         return false;
-      } else if (segment.position === 'nth') {
-        if (counter !== segment.positionValue) {
-          return false;
-        }
+      } else if (segment.position === 'nth' && counter !== segment.positionValue) {
+        return false;
       }
     }
 
@@ -35381,8 +35716,17 @@ class Matcher {
   }
 
   /**
-   * Create a snapshot of current state
-   * @returns {Object} State snapshot
+   * Match any expression in the given set against the current path.
+   * @param {ExpressionSet} exprSet
+   * @returns {boolean}
+   */
+  matchesAny(exprSet) {
+    return exprSet.matchesAny(this);
+  }
+
+  /**
+   * Create a snapshot of current state.
+   * @returns {Object}
    */
   snapshot() {
     return {
@@ -35392,12 +35736,33 @@ class Matcher {
   }
 
   /**
-   * Restore state from snapshot
-   * @param {Object} snapshot - State snapshot
+   * Restore state from snapshot.
+   * @param {Object} snapshot
    */
   restore(snapshot) {
+    this._pathStringCache = null;
     this.path = snapshot.path.map(node => ({ ...node }));
     this.siblingStacks = snapshot.siblingStacks.map(map => new Map(map));
+  }
+
+  /**
+   * Return the read-only {@link MatcherView} for this matcher.
+   *
+   * The same instance is returned on every call — no allocation occurs.
+   * It always reflects the current parser state and is safe to pass to
+   * user callbacks without risk of accidental mutation.
+   *
+   * @returns {MatcherView}
+   *
+   * @example
+   * const view = matcher.readOnly();
+   * // pass view to callbacks — it stays in sync automatically
+   * view.matches(expr);       // ✓
+   * view.getCurrentTag();     // ✓
+   * // view.push(...)         // ✗ method does not exist — caught by TypeScript
+   */
+  readOnly() {
+    return this._view;
   }
 }
 
@@ -35506,22 +35871,28 @@ class OrderedObjParser {
     // Initialize path matcher for path-expression-matcher
     this.matcher = new Matcher();
 
+    // Live read-only proxy of matcher — PEM creates and caches this internally.
+    // All user callbacks receive this instead of the mutable matcher.
+    this.readonlyMatcher = this.matcher.readOnly();
+
     // Flag to track if current node is a stop node (optimization)
     this.isCurrentNodeStopNode = false;
 
     // Pre-compile stopNodes expressions
-    if (this.options.stopNodes && this.options.stopNodes.length > 0) {
-      this.stopNodeExpressions = [];
-      for (let i = 0; i < this.options.stopNodes.length; i++) {
-        const stopNodeExp = this.options.stopNodes[i];
+    this.stopNodeExpressionsSet = new ExpressionSet();
+    const stopNodesOpts = this.options.stopNodes;
+    if (stopNodesOpts && stopNodesOpts.length > 0) {
+      for (let i = 0; i < stopNodesOpts.length; i++) {
+        const stopNodeExp = stopNodesOpts[i];
         if (typeof stopNodeExp === 'string') {
           // Convert string to Expression object
-          this.stopNodeExpressions.push(new Expression(stopNodeExp));
+          this.stopNodeExpressionsSet.add(new Expression(stopNodeExp));
         } else if (stopNodeExp instanceof Expression) {
           // Already an Expression object
-          this.stopNodeExpressions.push(stopNodeExp);
+          this.stopNodeExpressionsSet.add(stopNodeExp);
         }
       }
+      this.stopNodeExpressionsSet.seal();
     }
   }
 
@@ -35549,28 +35920,29 @@ function addExternalEntities(externalEntities) {
  * @param {boolean} escapeEntities
  */
 function parseTextData(val, tagName, jPath, dontTrim, hasAttributes, isLeafNode, escapeEntities) {
+  const options = this.options;
   if (val !== undefined) {
-    if (this.options.trimValues && !dontTrim) {
+    if (options.trimValues && !dontTrim) {
       val = val.trim();
     }
     if (val.length > 0) {
       if (!escapeEntities) val = this.replaceEntitiesValue(val, tagName, jPath);
 
       // Pass jPath string or matcher based on options.jPath setting
-      const jPathOrMatcher = this.options.jPath ? jPath.toString() : jPath;
-      const newval = this.options.tagValueProcessor(tagName, val, jPathOrMatcher, hasAttributes, isLeafNode);
+      const jPathOrMatcher = options.jPath ? jPath.toString() : jPath;
+      const newval = options.tagValueProcessor(tagName, val, jPathOrMatcher, hasAttributes, isLeafNode);
       if (newval === null || newval === undefined) {
         //don't parse
         return val;
       } else if (typeof newval !== typeof val || newval !== val) {
         //overwrite
         return newval;
-      } else if (this.options.trimValues) {
-        return parseValue(val, this.options.parseTagValue, this.options.numberParseOptions);
+      } else if (options.trimValues) {
+        return parseValue(val, options.parseTagValue, options.numberParseOptions);
       } else {
         const trimmedVal = val.trim();
         if (trimmedVal === val) {
-          return parseValue(val, this.options.parseTagValue, this.options.numberParseOptions);
+          return parseValue(val, options.parseTagValue, options.numberParseOptions);
         } else {
           return val;
         }
@@ -35598,7 +35970,8 @@ function resolveNameSpace(tagname) {
 const attrsRegx = new RegExp('([^\\s=]+)\\s*(=\\s*([\'"])([\\s\\S]*?)\\3)?', 'gm');
 
 function buildAttributesMap(attrStr, jPath, tagName) {
-  if (this.options.ignoreAttributes !== true && typeof attrStr === 'string') {
+  const options = this.options;
+  if (options.ignoreAttributes !== true && typeof attrStr === 'string') {
     // attrStr = attrStr.replace(/\r?\n/g, ' ');
     //attrStr = attrStr || attrStr.trim();
 
@@ -35606,89 +35979,80 @@ function buildAttributesMap(attrStr, jPath, tagName) {
     const len = matches.length; //don't make it inline
     const attrs = {};
 
-    // First pass: parse all attributes and update matcher with raw values
-    // This ensures the matcher has all attribute values when processors run
+    // Pre-process values once: trim + entity replacement
+    // Reused in both matcher update and second pass
+    const processedVals = new Array(len);
+    let hasRawAttrs = false;
     const rawAttrsForMatcher = {};
+
     for (let i = 0; i < len; i++) {
       const attrName = this.resolveNameSpace(matches[i][1]);
       const oldVal = matches[i][4];
 
       if (attrName.length && oldVal !== undefined) {
-        let parsedVal = oldVal;
-        if (this.options.trimValues) {
-          parsedVal = parsedVal.trim();
-        }
-        parsedVal = this.replaceEntitiesValue(parsedVal, tagName, jPath);
-        rawAttrsForMatcher[attrName] = parsedVal;
+        let val = oldVal;
+        if (options.trimValues) val = val.trim();
+        val = this.replaceEntitiesValue(val, tagName, this.readonlyMatcher);
+        processedVals[i] = val;
+
+        rawAttrsForMatcher[attrName] = val;
+        hasRawAttrs = true;
       }
     }
 
-    // Update matcher with raw attribute values BEFORE running processors
-    if (Object.keys(rawAttrsForMatcher).length > 0 && typeof jPath === 'object' && jPath.updateCurrent) {
+    // Update matcher ONCE before second pass, if applicable
+    if (hasRawAttrs && typeof jPath === 'object' && jPath.updateCurrent) {
       jPath.updateCurrent(rawAttrsForMatcher);
     }
 
-    // Second pass: now process attributes with matcher having full attribute context
+    // Hoist toString() once — path doesn't change during attribute processing
+    const jPathStr = options.jPath ? jPath.toString() : this.readonlyMatcher;
+
+    // Second pass: apply processors, build final attrs
+    let hasAttrs = false;
     for (let i = 0; i < len; i++) {
       const attrName = this.resolveNameSpace(matches[i][1]);
 
-      // Convert jPath to string if needed for ignoreAttributesFn
-      const jPathStr = this.options.jPath ? jPath.toString() : jPath;
-      if (this.ignoreAttributesFn(attrName, jPathStr)) {
-        continue
-      }
+      if (this.ignoreAttributesFn(attrName, jPathStr)) continue;
 
-      let oldVal = matches[i][4];
-      let aName = this.options.attributeNamePrefix + attrName;
+      let aName = options.attributeNamePrefix + attrName;
 
       if (attrName.length) {
-        if (this.options.transformAttributeName) {
-          aName = this.options.transformAttributeName(aName);
+        if (options.transformAttributeName) {
+          aName = options.transformAttributeName(aName);
         }
-        //if (aName === "__proto__") aName = "#__proto__";
-        aName = sanitizeName(aName, this.options);
+        aName = sanitizeName(aName, options);
 
-        if (oldVal !== undefined) {
-          if (this.options.trimValues) {
-            oldVal = oldVal.trim();
-          }
-          oldVal = this.replaceEntitiesValue(oldVal, tagName, jPath);
+        if (matches[i][4] !== undefined) {
+          // Reuse already-processed value — no double entity replacement
+          const oldVal = processedVals[i];
 
-          // Pass jPath string or matcher based on options.jPath setting
-          const jPathOrMatcher = this.options.jPath ? jPath.toString() : jPath;
-          const newVal = this.options.attributeValueProcessor(attrName, oldVal, jPathOrMatcher);
+          const newVal = options.attributeValueProcessor(attrName, oldVal, jPathStr);
           if (newVal === null || newVal === undefined) {
-            //don't parse
             attrs[aName] = oldVal;
           } else if (typeof newVal !== typeof oldVal || newVal !== oldVal) {
-            //overwrite
             attrs[aName] = newVal;
           } else {
-            //parse
-            attrs[aName] = parseValue(
-              oldVal,
-              this.options.parseAttributeValue,
-              this.options.numberParseOptions
-            );
+            attrs[aName] = parseValue(oldVal, options.parseAttributeValue, options.numberParseOptions);
           }
-        } else if (this.options.allowBooleanAttributes) {
+          hasAttrs = true;
+        } else if (options.allowBooleanAttributes) {
           attrs[aName] = true;
+          hasAttrs = true;
         }
       }
     }
 
-    if (!Object.keys(attrs).length) {
-      return;
-    }
-    if (this.options.attributesGroupName) {
+    if (!hasAttrs) return;
+
+    if (options.attributesGroupName) {
       const attrCollection = {};
-      attrCollection[this.options.attributesGroupName] = attrs;
+      attrCollection[options.attributesGroupName] = attrs;
       return attrCollection;
     }
-    return attrs
+    return attrs;
   }
 }
-
 const parseXml = function (xmlData) {
   xmlData = xmlData.replace(/\r\n?/g, "\n"); //TODO: remove this line
   const xmlObj = new XmlNode('!xml');
@@ -35701,36 +36065,41 @@ const parseXml = function (xmlData) {
   // Reset entity expansion counters for this document
   this.entityExpansionCount = 0;
   this.currentExpandedLength = 0;
-
-  const docTypeReader = new DocTypeReader(this.options.processEntities);
-  for (let i = 0; i < xmlData.length; i++) {//for each char in XML data
+  this.docTypeEntitiesKeys = [];
+  this.lastEntitiesKeys = Object.keys(this.lastEntities);
+  this.htmlEntitiesKeys = this.options.htmlEntities ? Object.keys(this.htmlEntities) : [];
+  const options = this.options;
+  const docTypeReader = new DocTypeReader(options.processEntities);
+  const xmlLen = xmlData.length;
+  for (let i = 0; i < xmlLen; i++) {//for each char in XML data
     const ch = xmlData[i];
     if (ch === '<') {
       // const nextIndex = i+1;
       // const _2ndChar = xmlData[nextIndex];
-      if (xmlData[i + 1] === '/') {//Closing Tag
+      const c1 = xmlData.charCodeAt(i + 1);
+      if (c1 === 47) {//Closing Tag '/'
         const closeIndex = findClosingIndex(xmlData, ">", i, "Closing Tag is not closed.");
         let tagName = xmlData.substring(i + 2, closeIndex).trim();
 
-        if (this.options.removeNSPrefix) {
+        if (options.removeNSPrefix) {
           const colonIndex = tagName.indexOf(":");
           if (colonIndex !== -1) {
             tagName = tagName.substr(colonIndex + 1);
           }
         }
 
-        tagName = transformTagName(this.options.transformTagName, tagName, "", this.options).tagName;
+        tagName = transformTagName(options.transformTagName, tagName, "", options).tagName;
 
         if (currentNode) {
-          textData = this.saveTextToParentTag(textData, currentNode, this.matcher);
+          textData = this.saveTextToParentTag(textData, currentNode, this.readonlyMatcher);
         }
 
         //check if last tag of nested tag was unpaired tag
         const lastTagName = this.matcher.getCurrentTag();
-        if (tagName && this.options.unpairedTags.indexOf(tagName) !== -1) {
+        if (tagName && options.unpairedTagsSet.has(tagName)) {
           throw new Error(`Unpaired tag can not be used as closing tag: </${tagName}>`);
         }
-        if (lastTagName && this.options.unpairedTags.indexOf(lastTagName) !== -1) {
+        if (lastTagName && options.unpairedTagsSet.has(lastTagName)) {
           // Pop the unpaired tag
           this.matcher.pop();
           this.tagsNodeStack.pop();
@@ -35742,63 +36111,68 @@ const parseXml = function (xmlData) {
         currentNode = this.tagsNodeStack.pop();//avoid recursion, set the parent tag scope
         textData = "";
         i = closeIndex;
-      } else if (xmlData[i + 1] === '?') {
+      } else if (c1 === 63) { //'?'
 
         let tagData = readTagExp(xmlData, i, false, "?>");
         if (!tagData) throw new Error("Pi Tag is not closed.");
 
-        textData = this.saveTextToParentTag(textData, currentNode, this.matcher);
-        if ((this.options.ignoreDeclaration && tagData.tagName === "?xml") || this.options.ignorePiTags) ; else {
+        textData = this.saveTextToParentTag(textData, currentNode, this.readonlyMatcher);
+        if ((options.ignoreDeclaration && tagData.tagName === "?xml") || options.ignorePiTags) ; else {
 
           const childNode = new XmlNode(tagData.tagName);
-          childNode.add(this.options.textNodeName, "");
+          childNode.add(options.textNodeName, "");
 
           if (tagData.tagName !== tagData.tagExp && tagData.attrExpPresent) {
             childNode[":@"] = this.buildAttributesMap(tagData.tagExp, this.matcher, tagData.tagName);
           }
-          this.addChild(currentNode, childNode, this.matcher, i);
+          this.addChild(currentNode, childNode, this.readonlyMatcher, i);
         }
 
 
         i = tagData.closeIndex + 1;
-      } else if (xmlData.substr(i + 1, 3) === '!--') {
+      } else if (c1 === 33
+        && xmlData.charCodeAt(i + 2) === 45
+        && xmlData.charCodeAt(i + 3) === 45) { //'!--'
         const endIndex = findClosingIndex(xmlData, "-->", i + 4, "Comment is not closed.");
-        if (this.options.commentPropName) {
+        if (options.commentPropName) {
           const comment = xmlData.substring(i + 4, endIndex - 2);
 
-          textData = this.saveTextToParentTag(textData, currentNode, this.matcher);
+          textData = this.saveTextToParentTag(textData, currentNode, this.readonlyMatcher);
 
-          currentNode.add(this.options.commentPropName, [{ [this.options.textNodeName]: comment }]);
+          currentNode.add(options.commentPropName, [{ [options.textNodeName]: comment }]);
         }
         i = endIndex;
-      } else if (xmlData.substr(i + 1, 2) === '!D') {
+      } else if (c1 === 33
+        && xmlData.charCodeAt(i + 2) === 68) { //'!D'
         const result = docTypeReader.readDocType(xmlData, i);
         this.docTypeEntities = result.entities;
+        this.docTypeEntitiesKeys = Object.keys(this.docTypeEntities) || [];
         i = result.i;
-      } else if (xmlData.substr(i + 1, 2) === '![') {
+      } else if (c1 === 33
+        && xmlData.charCodeAt(i + 2) === 91) { // '!['
         const closeIndex = findClosingIndex(xmlData, "]]>", i, "CDATA is not closed.") - 2;
         const tagExp = xmlData.substring(i + 9, closeIndex);
 
-        textData = this.saveTextToParentTag(textData, currentNode, this.matcher);
+        textData = this.saveTextToParentTag(textData, currentNode, this.readonlyMatcher);
 
-        let val = this.parseTextData(tagExp, currentNode.tagname, this.matcher, true, false, true, true);
+        let val = this.parseTextData(tagExp, currentNode.tagname, this.readonlyMatcher, true, false, true, true);
         if (val == undefined) val = "";
 
         //cdata should be set even if it is 0 length string
-        if (this.options.cdataPropName) {
-          currentNode.add(this.options.cdataPropName, [{ [this.options.textNodeName]: tagExp }]);
+        if (options.cdataPropName) {
+          currentNode.add(options.cdataPropName, [{ [options.textNodeName]: tagExp }]);
         } else {
-          currentNode.add(this.options.textNodeName, val);
+          currentNode.add(options.textNodeName, val);
         }
 
         i = closeIndex + 2;
       } else {//Opening tag
-        let result = readTagExp(xmlData, i, this.options.removeNSPrefix);
+        let result = readTagExp(xmlData, i, options.removeNSPrefix);
 
         // Safety check: readTagExp can return undefined
         if (!result) {
           // Log context for debugging
-          const context = xmlData.substring(Math.max(0, i - 50), Math.min(xmlData.length, i + 50));
+          const context = xmlData.substring(Math.max(0, i - 50), Math.min(xmlLen, i + 50));
           throw new Error(`readTagExp returned undefined at position ${i}. Context: "${context}"`);
         }
 
@@ -35808,13 +36182,13 @@ const parseXml = function (xmlData) {
         let attrExpPresent = result.attrExpPresent;
         let closeIndex = result.closeIndex;
 
-        ({ tagName, tagExp } = transformTagName(this.options.transformTagName, tagName, tagExp, this.options));
+        ({ tagName, tagExp } = transformTagName(options.transformTagName, tagName, tagExp, options));
 
-        if (this.options.strictReservedNames &&
-          (tagName === this.options.commentPropName
-            || tagName === this.options.cdataPropName
-            || tagName === this.options.textNodeName
-            || tagName === this.options.attributesGroupName
+        if (options.strictReservedNames &&
+          (tagName === options.commentPropName
+            || tagName === options.cdataPropName
+            || tagName === options.textNodeName
+            || tagName === options.attributesGroupName
           )) {
           throw new Error(`Invalid tag name: ${tagName}`);
         }
@@ -35823,13 +36197,13 @@ const parseXml = function (xmlData) {
         if (currentNode && textData) {
           if (currentNode.tagname !== '!xml') {
             //when nested tag is found
-            textData = this.saveTextToParentTag(textData, currentNode, this.matcher, false);
+            textData = this.saveTextToParentTag(textData, currentNode, this.readonlyMatcher, false);
           }
         }
 
         //check if last tag was unpaired tag
         const lastTag = currentNode;
-        if (lastTag && this.options.unpairedTags.indexOf(lastTag.tagname) !== -1) {
+        if (lastTag && options.unpairedTagsSet.has(lastTag.tagname)) {
           currentNode = this.tagsNodeStack.pop();
           this.matcher.pop();
         }
@@ -35870,13 +36244,13 @@ const parseXml = function (xmlData) {
 
           if (prefixedAttrs) {
             // Extract raw attributes (without prefix) for our use
-            extractRawAttributes(prefixedAttrs, this.options);
+            extractRawAttributes(prefixedAttrs, options);
           }
         }
 
         // Now check if this is a stop node (after attributes are set)
         if (tagName !== xmlObj.tagname) {
-          this.isCurrentNodeStopNode = this.isItStopNode(this.stopNodeExpressions, this.matcher);
+          this.isCurrentNodeStopNode = this.isItStopNode();
         }
 
         const startIndex = i;
@@ -35888,7 +36262,7 @@ const parseXml = function (xmlData) {
             i = result.closeIndex;
           }
           //unpaired tag
-          else if (this.options.unpairedTags.indexOf(tagName) !== -1) {
+          else if (options.unpairedTagsSet.has(tagName)) {
             i = result.closeIndex;
           }
           //normal tag
@@ -35907,31 +36281,31 @@ const parseXml = function (xmlData) {
           }
 
           // For stop nodes, store raw content as-is without any processing
-          childNode.add(this.options.textNodeName, tagContent);
+          childNode.add(options.textNodeName, tagContent);
 
           this.matcher.pop(); // Pop the stop node tag
           this.isCurrentNodeStopNode = false; // Reset flag
 
-          this.addChild(currentNode, childNode, this.matcher, startIndex);
+          this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
         } else {
           //selfClosing tag
           if (isSelfClosing) {
-            ({ tagName, tagExp } = transformTagName(this.options.transformTagName, tagName, tagExp, this.options));
+            ({ tagName, tagExp } = transformTagName(options.transformTagName, tagName, tagExp, options));
 
             const childNode = new XmlNode(tagName);
             if (prefixedAttrs) {
               childNode[":@"] = prefixedAttrs;
             }
-            this.addChild(currentNode, childNode, this.matcher, startIndex);
+            this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
             this.matcher.pop(); // Pop self-closing tag
             this.isCurrentNodeStopNode = false; // Reset flag
           }
-          else if (this.options.unpairedTags.indexOf(tagName) !== -1) {//unpaired tag
+          else if (options.unpairedTagsSet.has(tagName)) {//unpaired tag
             const childNode = new XmlNode(tagName);
             if (prefixedAttrs) {
               childNode[":@"] = prefixedAttrs;
             }
-            this.addChild(currentNode, childNode, this.matcher, startIndex);
+            this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
             this.matcher.pop(); // Pop unpaired tag
             this.isCurrentNodeStopNode = false; // Reset flag
             i = result.closeIndex;
@@ -35941,7 +36315,7 @@ const parseXml = function (xmlData) {
           //opening tag
           else {
             const childNode = new XmlNode(tagName);
-            if (this.tagsNodeStack.length > this.options.maxNestedTags) {
+            if (this.tagsNodeStack.length > options.maxNestedTags) {
               throw new Error("Maximum nested tags exceeded");
             }
             this.tagsNodeStack.push(currentNode);
@@ -35949,7 +36323,7 @@ const parseXml = function (xmlData) {
             if (prefixedAttrs) {
               childNode[":@"] = prefixedAttrs;
             }
-            this.addChild(currentNode, childNode, this.matcher, startIndex);
+            this.addChild(currentNode, childNode, this.readonlyMatcher, startIndex);
             currentNode = childNode;
           }
           textData = "";
@@ -36011,7 +36385,7 @@ function replaceEntitiesValue(val, tagName, jPath) {
   }
 
   // Replace DOCTYPE entities
-  for (const entityName of Object.keys(this.docTypeEntities)) {
+  for (const entityName of this.docTypeEntitiesKeys) {
     const entity = this.docTypeEntities[entityName];
     const matches = val.match(entity.regx);
 
@@ -36043,8 +36417,9 @@ function replaceEntitiesValue(val, tagName, jPath) {
       }
     }
   }
+  if (val.indexOf('&') === -1) return val;
   // Replace standard entities
-  for (const entityName of Object.keys(this.lastEntities)) {
+  for (const entityName of this.lastEntitiesKeys) {
     const entity = this.lastEntities[entityName];
     const matches = val.match(entity.regex);
     if (matches) {
@@ -36061,22 +36436,20 @@ function replaceEntitiesValue(val, tagName, jPath) {
   if (val.indexOf('&') === -1) return val;
 
   // Replace HTML entities if enabled
-  if (this.options.htmlEntities) {
-    for (const entityName of Object.keys(this.htmlEntities)) {
-      const entity = this.htmlEntities[entityName];
-      const matches = val.match(entity.regex);
-      if (matches) {
-        //console.log(matches);
-        this.entityExpansionCount += matches.length;
-        if (entityConfig.maxTotalExpansions &&
-          this.entityExpansionCount > entityConfig.maxTotalExpansions) {
-          throw new Error(
-            `Entity expansion limit exceeded: ${this.entityExpansionCount} > ${entityConfig.maxTotalExpansions}`
-          );
-        }
+  for (const entityName of this.htmlEntitiesKeys) {
+    const entity = this.htmlEntities[entityName];
+    const matches = val.match(entity.regex);
+    if (matches) {
+      //console.log(matches);
+      this.entityExpansionCount += matches.length;
+      if (entityConfig.maxTotalExpansions &&
+        this.entityExpansionCount > entityConfig.maxTotalExpansions) {
+        throw new Error(
+          `Entity expansion limit exceeded: ${this.entityExpansionCount} > ${entityConfig.maxTotalExpansions}`
+        );
       }
-      val = val.replace(entity.regex, entity.val);
     }
+    val = val.replace(entity.regex, entity.val);
   }
 
   // Replace ampersand entity last
@@ -36104,20 +36477,14 @@ function saveTextToParentTag(textData, parentNode, matcher, isLeafNode) {
   return textData;
 }
 
-//TODO: use jPath to simplify the logic
 /**
  * @param {Array<Expression>} stopNodeExpressions - Array of compiled Expression objects
  * @param {Matcher} matcher - Current path matcher
  */
-function isItStopNode(stopNodeExpressions, matcher) {
-  if (!stopNodeExpressions || stopNodeExpressions.length === 0) return false;
+function isItStopNode() {
+  if (this.stopNodeExpressionsSet.size === 0) return false;
 
-  for (let i = 0; i < stopNodeExpressions.length; i++) {
-    if (matcher.matches(stopNodeExpressions[i])) {
-      return true;
-    }
-  }
-  return false;
+  return this.matcher.matchesAny(this.stopNodeExpressionsSet);
 }
 
 /**
@@ -36127,32 +36494,33 @@ function isItStopNode(stopNodeExpressions, matcher) {
  * @returns 
  */
 function tagExpWithClosingIndex(xmlData, i, closingChar = ">") {
-  let attrBoundary;
-  let tagExp = "";
-  for (let index = i; index < xmlData.length; index++) {
-    let ch = xmlData[index];
+  let attrBoundary = 0;
+  const chars = [];
+  const len = xmlData.length;
+  const closeCode0 = closingChar.charCodeAt(0);
+  const closeCode1 = closingChar.length > 1 ? closingChar.charCodeAt(1) : -1;
+
+  for (let index = i; index < len; index++) {
+    const code = xmlData.charCodeAt(index);
+
     if (attrBoundary) {
-      if (ch === attrBoundary) attrBoundary = "";//reset
-    } else if (ch === '"' || ch === "'") {
-      attrBoundary = ch;
-    } else if (ch === closingChar[0]) {
-      if (closingChar[1]) {
-        if (xmlData[index + 1] === closingChar[1]) {
-          return {
-            data: tagExp,
-            index: index
-          }
+      if (code === attrBoundary) attrBoundary = 0;
+    } else if (code === 34 || code === 39) { // " or '
+      attrBoundary = code;
+    } else if (code === closeCode0) {
+      if (closeCode1 !== -1) {
+        if (xmlData.charCodeAt(index + 1) === closeCode1) {
+          return { data: String.fromCharCode(...chars), index };
         }
       } else {
-        return {
-          data: tagExp,
-          index: index
-        }
+        return { data: String.fromCharCode(...chars), index };
       }
-    } else if (ch === '\t') {
-      ch = " ";
+    } else if (code === 9) { // \t
+      chars.push(32); // space
+      continue;
     }
-    tagExp += ch;
+
+    chars.push(code);
   }
 }
 
@@ -36163,6 +36531,12 @@ function findClosingIndex(xmlData, str, i, errMsg) {
   } else {
     return closingIndex + str.length - 1;
   }
+}
+
+function findClosingChar(xmlData, char, i, errMsg) {
+  const closingIndex = xmlData.indexOf(char, i);
+  if (closingIndex === -1) throw new Error(errMsg);
+  return closingIndex; // no offset needed
 }
 
 function readTagExp(xmlData, i, removeNSPrefix, closingChar = ">") {
@@ -36206,10 +36580,12 @@ function readStopNodeData(xmlData, tagName, i) {
   // Starting at 1 since we already have an open tag
   let openTagCount = 1;
 
-  for (; i < xmlData.length; i++) {
+  const xmllen = xmlData.length;
+  for (; i < xmllen; i++) {
     if (xmlData[i] === "<") {
-      if (xmlData[i + 1] === "/") {//close tag
-        const closeIndex = findClosingIndex(xmlData, ">", i, `${tagName} is not closed`);
+      const c1 = xmlData.charCodeAt(i + 1);
+      if (c1 === 47) {//close tag '/'
+        const closeIndex = findClosingChar(xmlData, ">", i, `${tagName} is not closed`);
         let closeTagName = xmlData.substring(i + 2, closeIndex).trim();
         if (closeTagName === tagName) {
           openTagCount--;
@@ -36221,13 +36597,16 @@ function readStopNodeData(xmlData, tagName, i) {
           }
         }
         i = closeIndex;
-      } else if (xmlData[i + 1] === '?') {
+      } else if (c1 === 63) { //?
         const closeIndex = findClosingIndex(xmlData, "?>", i + 1, "StopNode is not closed.");
         i = closeIndex;
-      } else if (xmlData.substr(i + 1, 3) === '!--') {
+      } else if (c1 === 33
+        && xmlData.charCodeAt(i + 2) === 45
+        && xmlData.charCodeAt(i + 3) === 45) { // '!--'
         const closeIndex = findClosingIndex(xmlData, "-->", i + 3, "StopNode is not closed.");
         i = closeIndex;
-      } else if (xmlData.substr(i + 1, 2) === '![') {
+      } else if (c1 === 33
+        && xmlData.charCodeAt(i + 2) === 91) { // '!['
         const closeIndex = findClosingIndex(xmlData, "]]>", i, "StopNode is not closed.") - 2;
         i = closeIndex;
       } else {
@@ -36326,18 +36705,17 @@ function stripAttributePrefix(attrs, prefix) {
  * @param {Matcher} matcher - Path matcher instance
  * @returns 
  */
-function prettify(node, options, matcher) {
-  return compress(node, options, matcher);
+function prettify(node, options, matcher, readonlyMatcher) {
+  return compress(node, options, matcher, readonlyMatcher);
 }
 
 /**
- * 
  * @param {array} arr 
  * @param {object} options 
  * @param {Matcher} matcher - Path matcher instance
  * @returns object
  */
-function compress(arr, options, matcher) {
+function compress(arr, options, matcher, readonlyMatcher) {
   let text;
   const compressedObj = {}; //This is intended to be a plain object
   for (let i = 0; i < arr.length; i++) {
@@ -36360,11 +36738,11 @@ function compress(arr, options, matcher) {
       continue;
     } else if (tagObj[property]) {
 
-      let val = compress(tagObj[property], options, matcher);
+      let val = compress(tagObj[property], options, matcher, readonlyMatcher);
       const isLeaf = isLeafTag(val, options);
 
       if (tagObj[":@"]) {
-        assignAttributes(val, tagObj[":@"], matcher, options);
+        assignAttributes(val, tagObj[":@"], readonlyMatcher, options);
       } else if (Object.keys(val).length === 1 && val[options.textNodeName] !== undefined && !options.alwaysCreateTextNode) {
         val = val[options.textNodeName];
       } else if (Object.keys(val).length === 0) {
@@ -36386,8 +36764,8 @@ function compress(arr, options, matcher) {
         //TODO: if a node is not an array, then check if it should be an array
         //also determine if it is a leaf node
 
-        // Pass jPath string or matcher based on options.jPath setting
-        const jPathOrMatcher = options.jPath ? matcher.toString() : matcher;
+        // Pass jPath string or readonlyMatcher based on options.jPath setting
+        const jPathOrMatcher = options.jPath ? readonlyMatcher.toString() : readonlyMatcher;
         if (options.isArray(property, jPathOrMatcher, isLeaf)) {
           compressedObj[property] = [val];
         } else {
@@ -36419,7 +36797,7 @@ function propName(obj) {
   }
 }
 
-function assignAttributes(obj, attrMap, matcher, options) {
+function assignAttributes(obj, attrMap, readonlyMatcher, options) {
   if (attrMap) {
     const keys = Object.keys(attrMap);
     const len = keys.length; //don't make it inline
@@ -36434,8 +36812,8 @@ function assignAttributes(obj, attrMap, matcher, options) {
       // For attributes, we need to create a temporary path
       // Pass jPath string or matcher based on options.jPath setting
       const jPathOrMatcher = options.jPath
-        ? matcher.toString() + "." + rawAttrName
-        : matcher;
+        ? readonlyMatcher.toString() + "." + rawAttrName
+        : readonlyMatcher;
 
       if (options.isArray(atrrName, jPathOrMatcher, true, true)) {
         obj[atrrName] = [attrMap[atrrName]];
@@ -36495,7 +36873,7 @@ class XMLParser {
         orderedObjParser.addExternalEntities(this.externalEntities);
         const orderedResult = orderedObjParser.parseXml(xmlData);
         if (this.options.preserveOrder || orderedResult === undefined) return orderedResult;
-        else return prettify(orderedResult, this.options, orderedObjParser.matcher);
+        else return prettify(orderedResult, this.options, orderedObjParser.matcher, orderedObjParser.readonlyMatcher);
     }
 
     /**
@@ -69304,7 +69682,7 @@ var hasRequiredFxp;
 function requireFxp () {
 	if (hasRequiredFxp) return fxp.exports;
 	hasRequiredFxp = 1;
-	(()=>{var t={d:(e,i)=>{for(var n in i)t.o(i,n)&&!t.o(e,n)&&Object.defineProperty(e,n,{enumerable:true,get:i[n]});},o:(t,e)=>Object.prototype.hasOwnProperty.call(t,e),r:t=>{"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(t,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(t,"__esModule",{value:true});}},e={};t.r(e),t.d(e,{XMLBuilder:()=>Ot,XMLParser:()=>ft,XMLValidator:()=>$t});const i=":A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF\\u200C-\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD",n=new RegExp("^["+i+"]["+i+"\\-.\\d\\u00B7\\u0300-\\u036F\\u203F-\\u2040]*$");function s(t,e){const i=[];let n=e.exec(t);for(;n;){const s=[];s.startIndex=e.lastIndex-n[0].length;const r=n.length;for(let t=0;t<r;t++)s.push(n[t]);i.push(s),n=e.exec(t);}return i}const r=function(t){return !(null==n.exec(t))},o=["hasOwnProperty","toString","valueOf","__defineGetter__","__defineSetter__","__lookupGetter__","__lookupSetter__"],a=["__proto__","constructor","prototype"],h={allowBooleanAttributes:false,unpairedTags:[]};function l(t,e){e=Object.assign({},h,e);const i=[];let n=false,s=false;"\ufeff"===t[0]&&(t=t.substr(1));for(let r=0;r<t.length;r++)if("<"===t[r]&&"?"===t[r+1]){if(r+=2,r=u(t,r),r.err)return r}else {if("<"!==t[r]){if(p(t[r]))continue;return b("InvalidChar","char '"+t[r]+"' is not expected.",w(t,r))}{let o=r;if(r++,"!"===t[r]){r=c(t,r);continue}{let a=false;"/"===t[r]&&(a=true,r++);let h="";for(;r<t.length&&">"!==t[r]&&" "!==t[r]&&"\t"!==t[r]&&"\n"!==t[r]&&"\r"!==t[r];r++)h+=t[r];if(h=h.trim(),"/"===h[h.length-1]&&(h=h.substring(0,h.length-1),r--),!y(h)){let e;return e=0===h.trim().length?"Invalid space after '<'.":"Tag '"+h+"' is an invalid name.",b("InvalidTag",e,w(t,r))}const l=g(t,r);if(false===l)return b("InvalidAttr","Attributes for '"+h+"' have open quote.",w(t,r));let d=l.value;if(r=l.index,"/"===d[d.length-1]){const i=r-d.length;d=d.substring(0,d.length-1);const s=x(d,e);if(true!==s)return b(s.err.code,s.err.msg,w(t,i+s.err.line));n=true;}else if(a){if(!l.tagClosed)return b("InvalidTag","Closing tag '"+h+"' doesn't have proper closing.",w(t,r));if(d.trim().length>0)return b("InvalidTag","Closing tag '"+h+"' can't have attributes or invalid starting.",w(t,o));if(0===i.length)return b("InvalidTag","Closing tag '"+h+"' has not been opened.",w(t,o));{const e=i.pop();if(h!==e.tagName){let i=w(t,e.tagStartPos);return b("InvalidTag","Expected closing tag '"+e.tagName+"' (opened in line "+i.line+", col "+i.col+") instead of closing tag '"+h+"'.",w(t,o))}0==i.length&&(s=true);}}else {const a=x(d,e);if(true!==a)return b(a.err.code,a.err.msg,w(t,r-d.length+a.err.line));if(true===s)return b("InvalidXml","Multiple possible root nodes found.",w(t,r));-1!==e.unpairedTags.indexOf(h)||i.push({tagName:h,tagStartPos:o}),n=true;}for(r++;r<t.length;r++)if("<"===t[r]){if("!"===t[r+1]){r++,r=c(t,r);continue}if("?"!==t[r+1])break;if(r=u(t,++r),r.err)return r}else if("&"===t[r]){const e=N(t,r);if(-1==e)return b("InvalidChar","char '&' is not expected.",w(t,r));r=e;}else if(true===s&&!p(t[r]))return b("InvalidXml","Extra text at the end",w(t,r));"<"===t[r]&&r--;}}}return n?1==i.length?b("InvalidTag","Unclosed tag '"+i[0].tagName+"'.",w(t,i[0].tagStartPos)):!(i.length>0)||b("InvalidXml","Invalid '"+JSON.stringify(i.map(t=>t.tagName),null,4).replace(/\r?\n/g,"")+"' found.",{line:1,col:1}):b("InvalidXml","Start tag expected.",1)}function p(t){return " "===t||"\t"===t||"\n"===t||"\r"===t}function u(t,e){const i=e;for(;e<t.length;e++)if("?"==t[e]||" "==t[e]){const n=t.substr(i,e-i);if(e>5&&"xml"===n)return b("InvalidXml","XML declaration allowed only at the start of the document.",w(t,e));if("?"==t[e]&&">"==t[e+1]){e++;break}continue}return e}function c(t,e){if(t.length>e+5&&"-"===t[e+1]&&"-"===t[e+2]){for(e+=3;e<t.length;e++)if("-"===t[e]&&"-"===t[e+1]&&">"===t[e+2]){e+=2;break}}else if(t.length>e+8&&"D"===t[e+1]&&"O"===t[e+2]&&"C"===t[e+3]&&"T"===t[e+4]&&"Y"===t[e+5]&&"P"===t[e+6]&&"E"===t[e+7]){let i=1;for(e+=8;e<t.length;e++)if("<"===t[e])i++;else if(">"===t[e]&&(i--,0===i))break}else if(t.length>e+9&&"["===t[e+1]&&"C"===t[e+2]&&"D"===t[e+3]&&"A"===t[e+4]&&"T"===t[e+5]&&"A"===t[e+6]&&"["===t[e+7])for(e+=8;e<t.length;e++)if("]"===t[e]&&"]"===t[e+1]&&">"===t[e+2]){e+=2;break}return e}const d='"',f="'";function g(t,e){let i="",n="",s=false;for(;e<t.length;e++){if(t[e]===d||t[e]===f)""===n?n=t[e]:n!==t[e]||(n="");else if(">"===t[e]&&""===n){s=true;break}i+=t[e];}return ""===n&&{value:i,index:e,tagClosed:s}}const m=new RegExp("(\\s*)([^\\s=]+)(\\s*=)?(\\s*(['\"])(([\\s\\S])*?)\\5)?","g");function x(t,e){const i=s(t,m),n={};for(let t=0;t<i.length;t++){if(0===i[t][1].length)return b("InvalidAttr","Attribute '"+i[t][2]+"' has no space in starting.",v(i[t]));if(void 0!==i[t][3]&&void 0===i[t][4])return b("InvalidAttr","Attribute '"+i[t][2]+"' is without value.",v(i[t]));if(void 0===i[t][3]&&!e.allowBooleanAttributes)return b("InvalidAttr","boolean attribute '"+i[t][2]+"' is not allowed.",v(i[t]));const s=i[t][2];if(!E(s))return b("InvalidAttr","Attribute '"+s+"' is an invalid name.",v(i[t]));if(Object.prototype.hasOwnProperty.call(n,s))return b("InvalidAttr","Attribute '"+s+"' is repeated.",v(i[t]));n[s]=1;}return  true}function N(t,e){if(";"===t[++e])return  -1;if("#"===t[e])return function(t,e){let i=/\d/;for("x"===t[e]&&(e++,i=/[\da-fA-F]/);e<t.length;e++){if(";"===t[e])return e;if(!t[e].match(i))break}return  -1}(t,++e);let i=0;for(;e<t.length;e++,i++)if(!(t[e].match(/\w/)&&i<20)){if(";"===t[e])break;return  -1}return e}function b(t,e,i){return {err:{code:t,msg:e,line:i.line||i,col:i.col}}}function E(t){return r(t)}function y(t){return r(t)}function w(t,e){const i=t.substring(0,e).split(/\r?\n/);return {line:i.length,col:i[i.length-1].length+1}}function v(t){return t.startIndex+t[1].length}const T=t=>o.includes(t)?"__"+t:t,P={preserveOrder:false,attributeNamePrefix:"@_",attributesGroupName:false,textNodeName:"#text",ignoreAttributes:true,removeNSPrefix:false,allowBooleanAttributes:false,parseTagValue:true,parseAttributeValue:false,trimValues:true,cdataPropName:false,numberParseOptions:{hex:true,leadingZeros:true,eNotation:true},tagValueProcessor:function(t,e){return e},attributeValueProcessor:function(t,e){return e},stopNodes:[],alwaysCreateTextNode:false,isArray:()=>false,commentPropName:false,unpairedTags:[],processEntities:true,htmlEntities:false,ignoreDeclaration:false,ignorePiTags:false,transformTagName:false,transformAttributeName:false,updateTag:function(t,e,i){return t},captureMetaData:false,maxNestedTags:100,strictReservedNames:true,jPath:true,onDangerousProperty:T};function S(t,e){if("string"!=typeof t)return;const i=t.toLowerCase();if(o.some(t=>i===t.toLowerCase()))throw new Error(`[SECURITY] Invalid ${e}: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`);if(a.some(t=>i===t.toLowerCase()))throw new Error(`[SECURITY] Invalid ${e}: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`)}function A(t){return "boolean"==typeof t?{enabled:t,maxEntitySize:1e4,maxExpansionDepth:10,maxTotalExpansions:1e3,maxExpandedLength:1e5,maxEntityCount:100,allowedTags:null,tagFilter:null}:"object"==typeof t&&null!==t?{enabled:false!==t.enabled,maxEntitySize:Math.max(1,t.maxEntitySize??1e4),maxExpansionDepth:Math.max(1,t.maxExpansionDepth??10),maxTotalExpansions:Math.max(1,t.maxTotalExpansions??1e3),maxExpandedLength:Math.max(1,t.maxExpandedLength??1e5),maxEntityCount:Math.max(1,t.maxEntityCount??100),allowedTags:t.allowedTags??null,tagFilter:t.tagFilter??null}:A(true)}const C=function(t){const e=Object.assign({},P,t),i=[{value:e.attributeNamePrefix,name:"attributeNamePrefix"},{value:e.attributesGroupName,name:"attributesGroupName"},{value:e.textNodeName,name:"textNodeName"},{value:e.cdataPropName,name:"cdataPropName"},{value:e.commentPropName,name:"commentPropName"}];for(const{value:t,name:e}of i)t&&S(t,e);return null===e.onDangerousProperty&&(e.onDangerousProperty=T),e.processEntities=A(e.processEntities),e.stopNodes&&Array.isArray(e.stopNodes)&&(e.stopNodes=e.stopNodes.map(t=>"string"==typeof t&&t.startsWith("*.")?".."+t.substring(2):t)),e};let O;O="function"!=typeof Symbol?"@@xmlMetadata":Symbol("XML Node Metadata");class ${constructor(t){this.tagname=t,this.child=[],this[":@"]=Object.create(null);}add(t,e){"__proto__"===t&&(t="#__proto__"),this.child.push({[t]:e});}addChild(t,e){"__proto__"===t.tagname&&(t.tagname="#__proto__"),t[":@"]&&Object.keys(t[":@"]).length>0?this.child.push({[t.tagname]:t.child,":@":t[":@"]}):this.child.push({[t.tagname]:t.child}),void 0!==e&&(this.child[this.child.length-1][O]={startIndex:e});}static getMetaDataSymbol(){return O}}class I{constructor(t){this.suppressValidationErr=!t,this.options=t;}readDocType(t,e){const i=Object.create(null);let n=0;if("O"!==t[e+3]||"C"!==t[e+4]||"T"!==t[e+5]||"Y"!==t[e+6]||"P"!==t[e+7]||"E"!==t[e+8])throw new Error("Invalid Tag instead of DOCTYPE");{e+=9;let s=1,r=false,o=false,a="";for(;e<t.length;e++)if("<"!==t[e]||o)if(">"===t[e]){if(o?"-"===t[e-1]&&"-"===t[e-2]&&(o=false,s--):s--,0===s)break}else "["===t[e]?r=true:a+=t[e];else {if(r&&_(t,"!ENTITY",e)){let s,r;if(e+=7,[s,r,e]=this.readEntityExp(t,e+1,this.suppressValidationErr),-1===r.indexOf("&")){if(false!==this.options.enabled&&null!=this.options.maxEntityCount&&n>=this.options.maxEntityCount)throw new Error(`Entity count (${n+1}) exceeds maximum allowed (${this.options.maxEntityCount})`);const t=s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");i[s]={regx:RegExp(`&${t};`,"g"),val:r},n++;}}else if(r&&_(t,"!ELEMENT",e)){e+=8;const{index:i}=this.readElementExp(t,e+1);e=i;}else if(r&&_(t,"!ATTLIST",e))e+=8;else if(r&&_(t,"!NOTATION",e)){e+=9;const{index:i}=this.readNotationExp(t,e+1,this.suppressValidationErr);e=i;}else {if(!_(t,"!--",e))throw new Error("Invalid DOCTYPE");o=true;}s++,a="";}if(0!==s)throw new Error("Unclosed DOCTYPE")}return {entities:i,i:e}}readEntityExp(t,e){const i=e=j(t,e);for(;e<t.length&&!/\s/.test(t[e])&&'"'!==t[e]&&"'"!==t[e];)e++;let n=t.substring(i,e);if(D(n),e=j(t,e),!this.suppressValidationErr){if("SYSTEM"===t.substring(e,e+6).toUpperCase())throw new Error("External entities are not supported");if("%"===t[e])throw new Error("Parameter entities are not supported")}let s="";if([e,s]=this.readIdentifierVal(t,e,"entity"),false!==this.options.enabled&&null!=this.options.maxEntitySize&&s.length>this.options.maxEntitySize)throw new Error(`Entity "${n}" size (${s.length}) exceeds maximum allowed size (${this.options.maxEntitySize})`);return [n,s,--e]}readNotationExp(t,e){const i=e=j(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let n=t.substring(i,e);!this.suppressValidationErr&&D(n),e=j(t,e);const s=t.substring(e,e+6).toUpperCase();if(!this.suppressValidationErr&&"SYSTEM"!==s&&"PUBLIC"!==s)throw new Error(`Expected SYSTEM or PUBLIC, found "${s}"`);e+=s.length,e=j(t,e);let r=null,o=null;if("PUBLIC"===s)[e,r]=this.readIdentifierVal(t,e,"publicIdentifier"),'"'!==t[e=j(t,e)]&&"'"!==t[e]||([e,o]=this.readIdentifierVal(t,e,"systemIdentifier"));else if("SYSTEM"===s&&([e,o]=this.readIdentifierVal(t,e,"systemIdentifier"),!this.suppressValidationErr&&!o))throw new Error("Missing mandatory system identifier for SYSTEM notation");return {notationName:n,publicIdentifier:r,systemIdentifier:o,index:--e}}readIdentifierVal(t,e,i){let n="";const s=t[e];if('"'!==s&&"'"!==s)throw new Error(`Expected quoted string, found "${s}"`);const r=++e;for(;e<t.length&&t[e]!==s;)e++;if(n=t.substring(r,e),t[e]!==s)throw new Error(`Unterminated ${i} value`);return [++e,n]}readElementExp(t,e){const i=e=j(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let n=t.substring(i,e);if(!this.suppressValidationErr&&!r(n))throw new Error(`Invalid element name: "${n}"`);let s="";if("E"===t[e=j(t,e)]&&_(t,"MPTY",e))e+=4;else if("A"===t[e]&&_(t,"NY",e))e+=2;else if("("===t[e]){const i=++e;for(;e<t.length&&")"!==t[e];)e++;if(s=t.substring(i,e),")"!==t[e])throw new Error("Unterminated content model")}else if(!this.suppressValidationErr)throw new Error(`Invalid Element Expression, found "${t[e]}"`);return {elementName:n,contentModel:s.trim(),index:e}}readAttlistExp(t,e){let i=e=j(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let n=t.substring(i,e);for(D(n),i=e=j(t,e);e<t.length&&!/\s/.test(t[e]);)e++;let s=t.substring(i,e);if(!D(s))throw new Error(`Invalid attribute name: "${s}"`);e=j(t,e);let r="";if("NOTATION"===t.substring(e,e+8).toUpperCase()){if(r="NOTATION","("!==t[e=j(t,e+=8)])throw new Error(`Expected '(', found "${t[e]}"`);e++;let i=[];for(;e<t.length&&")"!==t[e];){const n=e;for(;e<t.length&&"|"!==t[e]&&")"!==t[e];)e++;let s=t.substring(n,e);if(s=s.trim(),!D(s))throw new Error(`Invalid notation name: "${s}"`);i.push(s),"|"===t[e]&&(e++,e=j(t,e));}if(")"!==t[e])throw new Error("Unterminated list of notations");e++,r+=" ("+i.join("|")+")";}else {const i=e;for(;e<t.length&&!/\s/.test(t[e]);)e++;r+=t.substring(i,e);const n=["CDATA","ID","IDREF","IDREFS","ENTITY","ENTITIES","NMTOKEN","NMTOKENS"];if(!this.suppressValidationErr&&!n.includes(r.toUpperCase()))throw new Error(`Invalid attribute type: "${r}"`)}e=j(t,e);let o="";return "#REQUIRED"===t.substring(e,e+8).toUpperCase()?(o="#REQUIRED",e+=8):"#IMPLIED"===t.substring(e,e+7).toUpperCase()?(o="#IMPLIED",e+=7):[e,o]=this.readIdentifierVal(t,e,"ATTLIST"),{elementName:n,attributeName:s,attributeType:r,defaultValue:o,index:e}}}const j=(t,e)=>{for(;e<t.length&&/\s/.test(t[e]);)e++;return e};function _(t,e,i){for(let n=0;n<e.length;n++)if(e[n]!==t[i+n+1])return  false;return  true}function D(t){if(r(t))return t;throw new Error(`Invalid entity name ${t}`)}const V=/^[-+]?0x[a-fA-F0-9]+$/,k=/^([\-\+])?(0*)([0-9]*(\.[0-9]*)?)$/,M={hex:true,leadingZeros:true,decimalPoint:".",eNotation:true,infinity:"original"};const F=/^([-+])?(0*)(\d*(\.\d*)?[eE][-\+]?\d+)$/;class L{constructor(t={}){this.separator=t.separator||".",this.path=[],this.siblingStacks=[];}push(t,e=null,i=null){this.path.length>0&&(this.path[this.path.length-1].values=void 0);const n=this.path.length;this.siblingStacks[n]||(this.siblingStacks[n]=new Map);const s=this.siblingStacks[n],r=i?`${i}:${t}`:t,o=s.get(r)||0;let a=0;for(const t of s.values())a+=t;s.set(r,o+1);const h={tag:t,position:a,counter:o};null!=i&&(h.namespace=i),null!=e&&(h.values=e),this.path.push(h);}pop(){if(0===this.path.length)return;const t=this.path.pop();return this.siblingStacks.length>this.path.length+1&&(this.siblingStacks.length=this.path.length+1),t}updateCurrent(t){if(this.path.length>0){const e=this.path[this.path.length-1];null!=t&&(e.values=t);}}getCurrentTag(){return this.path.length>0?this.path[this.path.length-1].tag:void 0}getCurrentNamespace(){return this.path.length>0?this.path[this.path.length-1].namespace:void 0}getAttrValue(t){if(0===this.path.length)return;const e=this.path[this.path.length-1];return e.values?.[t]}hasAttr(t){if(0===this.path.length)return  false;const e=this.path[this.path.length-1];return void 0!==e.values&&t in e.values}getPosition(){return 0===this.path.length?-1:this.path[this.path.length-1].position??0}getCounter(){return 0===this.path.length?-1:this.path[this.path.length-1].counter??0}getIndex(){return this.getPosition()}getDepth(){return this.path.length}toString(t,e=true){const i=t||this.separator;return this.path.map(t=>e&&t.namespace?`${t.namespace}:${t.tag}`:t.tag).join(i)}toArray(){return this.path.map(t=>t.tag)}reset(){this.path=[],this.siblingStacks=[];}matches(t){const e=t.segments;return 0!==e.length&&(t.hasDeepWildcard()?this._matchWithDeepWildcard(e):this._matchSimple(e))}_matchSimple(t){if(this.path.length!==t.length)return  false;for(let e=0;e<t.length;e++){const i=t[e],n=this.path[e],s=e===this.path.length-1;if(!this._matchSegment(i,n,s))return  false}return  true}_matchWithDeepWildcard(t){let e=this.path.length-1,i=t.length-1;for(;i>=0&&e>=0;){const n=t[i];if("deep-wildcard"===n.type){if(i--,i<0)return  true;const n=t[i];let s=false;for(let t=e;t>=0;t--){const r=t===this.path.length-1;if(this._matchSegment(n,this.path[t],r)){e=t-1,i--,s=true;break}}if(!s)return  false}else {const t=e===this.path.length-1;if(!this._matchSegment(n,this.path[e],t))return  false;e--,i--;}}return i<0}_matchSegment(t,e,i){if("*"!==t.tag&&t.tag!==e.tag)return  false;if(void 0!==t.namespace&&"*"!==t.namespace&&t.namespace!==e.namespace)return  false;if(void 0!==t.attrName){if(!i)return  false;if(!e.values||!(t.attrName in e.values))return  false;if(void 0!==t.attrValue){const i=e.values[t.attrName];if(String(i)!==String(t.attrValue))return  false}}if(void 0!==t.position){if(!i)return  false;const n=e.counter??0;if("first"===t.position&&0!==n)return  false;if("odd"===t.position&&n%2!=1)return  false;if("even"===t.position&&n%2!=0)return  false;if("nth"===t.position&&n!==t.positionValue)return  false}return  true}snapshot(){return {path:this.path.map(t=>({...t})),siblingStacks:this.siblingStacks.map(t=>new Map(t))}}restore(t){this.path=t.path.map(t=>({...t})),this.siblingStacks=t.siblingStacks.map(t=>new Map(t));}}class G{constructor(t,e={}){this.pattern=t,this.separator=e.separator||".",this.segments=this._parse(t),this._hasDeepWildcard=this.segments.some(t=>"deep-wildcard"===t.type),this._hasAttributeCondition=this.segments.some(t=>void 0!==t.attrName),this._hasPositionSelector=this.segments.some(t=>void 0!==t.position);}_parse(t){const e=[];let i=0,n="";for(;i<t.length;)t[i]===this.separator?i+1<t.length&&t[i+1]===this.separator?(n.trim()&&(e.push(this._parseSegment(n.trim())),n=""),e.push({type:"deep-wildcard"}),i+=2):(n.trim()&&e.push(this._parseSegment(n.trim())),n="",i++):(n+=t[i],i++);return n.trim()&&e.push(this._parseSegment(n.trim())),e}_parseSegment(t){const e={type:"tag"};let i=null,n=t;const s=t.match(/^([^\[]+)(\[[^\]]*\])(.*)$/);if(s&&(n=s[1]+s[3],s[2])){const t=s[2].slice(1,-1);t&&(i=t);}let r,o,a=n;if(n.includes("::")){const e=n.indexOf("::");if(r=n.substring(0,e).trim(),a=n.substring(e+2).trim(),!r)throw new Error(`Invalid namespace in pattern: ${t}`)}let h=null;if(a.includes(":")){const t=a.lastIndexOf(":"),e=a.substring(0,t).trim(),i=a.substring(t+1).trim();["first","last","odd","even"].includes(i)||/^nth\(\d+\)$/.test(i)?(o=e,h=i):o=a;}else o=a;if(!o)throw new Error(`Invalid segment pattern: ${t}`);if(e.tag=o,r&&(e.namespace=r),i)if(i.includes("=")){const t=i.indexOf("=");e.attrName=i.substring(0,t).trim(),e.attrValue=i.substring(t+1).trim();}else e.attrName=i.trim();if(h){const t=h.match(/^nth\((\d+)\)$/);t?(e.position="nth",e.positionValue=parseInt(t[1],10)):e.position=h;}return e}get length(){return this.segments.length}hasDeepWildcard(){return this._hasDeepWildcard}hasAttributeCondition(){return this._hasAttributeCondition}hasPositionSelector(){return this._hasPositionSelector}toString(){return this.pattern}}function R(t,e){if(!t)return {};const i=e.attributesGroupName?t[e.attributesGroupName]:t;if(!i)return {};const n={};for(const t in i)t.startsWith(e.attributeNamePrefix)?n[t.substring(e.attributeNamePrefix.length)]=i[t]:n[t]=i[t];return n}function U(t){if(!t||"string"!=typeof t)return;const e=t.indexOf(":");if(-1!==e&&e>0){const i=t.substring(0,e);if("xmlns"!==i)return i}}class B{constructor(t){var e;if(this.options=t,this.currentNode=null,this.tagsNodeStack=[],this.docTypeEntities={},this.lastEntities={apos:{regex:/&(apos|#39|#x27);/g,val:"'"},gt:{regex:/&(gt|#62|#x3E);/g,val:">"},lt:{regex:/&(lt|#60|#x3C);/g,val:"<"},quot:{regex:/&(quot|#34|#x22);/g,val:'"'}},this.ampEntity={regex:/&(amp|#38|#x26);/g,val:"&"},this.htmlEntities={space:{regex:/&(nbsp|#160);/g,val:" "},cent:{regex:/&(cent|#162);/g,val:"¢"},pound:{regex:/&(pound|#163);/g,val:"£"},yen:{regex:/&(yen|#165);/g,val:"¥"},euro:{regex:/&(euro|#8364);/g,val:"€"},copyright:{regex:/&(copy|#169);/g,val:"©"},reg:{regex:/&(reg|#174);/g,val:"®"},inr:{regex:/&(inr|#8377);/g,val:"₹"},num_dec:{regex:/&#([0-9]{1,7});/g,val:(t,e)=>st(e,10,"&#")},num_hex:{regex:/&#x([0-9a-fA-F]{1,6});/g,val:(t,e)=>st(e,16,"&#x")}},this.addExternalEntities=W,this.parseXml=Z,this.parseTextData=Y,this.resolveNameSpace=X,this.buildAttributesMap=q,this.isItStopNode=H,this.replaceEntitiesValue=K,this.readStopNodeData=it,this.saveTextToParentTag=Q,this.addChild=J,this.ignoreAttributesFn="function"==typeof(e=this.options.ignoreAttributes)?e:Array.isArray(e)?t=>{for(const i of e){if("string"==typeof i&&t===i)return  true;if(i instanceof RegExp&&i.test(t))return  true}}:()=>false,this.entityExpansionCount=0,this.currentExpandedLength=0,this.matcher=new L,this.isCurrentNodeStopNode=false,this.options.stopNodes&&this.options.stopNodes.length>0){this.stopNodeExpressions=[];for(let t=0;t<this.options.stopNodes.length;t++){const e=this.options.stopNodes[t];"string"==typeof e?this.stopNodeExpressions.push(new G(e)):e instanceof G&&this.stopNodeExpressions.push(e);}}}}function W(t){const e=Object.keys(t);for(let i=0;i<e.length;i++){const n=e[i],s=n.replace(/[.\-+*:]/g,"\\.");this.lastEntities[n]={regex:new RegExp("&"+s+";","g"),val:t[n]};}}function Y(t,e,i,n,s,r,o){if(void 0!==t&&(this.options.trimValues&&!n&&(t=t.trim()),t.length>0)){o||(t=this.replaceEntitiesValue(t,e,i));const n=this.options.jPath?i.toString():i,a=this.options.tagValueProcessor(e,t,n,s,r);return null==a?t:typeof a!=typeof t||a!==t?a:this.options.trimValues||t.trim()===t?nt(t,this.options.parseTagValue,this.options.numberParseOptions):t}}function X(t){if(this.options.removeNSPrefix){const e=t.split(":"),i="/"===t.charAt(0)?"/":"";if("xmlns"===e[0])return "";2===e.length&&(t=i+e[1]);}return t}const z=new RegExp("([^\\s=]+)\\s*(=\\s*(['\"])([\\s\\S]*?)\\3)?","gm");function q(t,e,i){if(true!==this.options.ignoreAttributes&&"string"==typeof t){const n=s(t,z),r=n.length,o={},a={};for(let t=0;t<r;t++){const s=this.resolveNameSpace(n[t][1]),r=n[t][4];if(s.length&&void 0!==r){let t=r;this.options.trimValues&&(t=t.trim()),t=this.replaceEntitiesValue(t,i,e),a[s]=t;}}Object.keys(a).length>0&&"object"==typeof e&&e.updateCurrent&&e.updateCurrent(a);for(let t=0;t<r;t++){const s=this.resolveNameSpace(n[t][1]),r=this.options.jPath?e.toString():e;if(this.ignoreAttributesFn(s,r))continue;let a=n[t][4],h=this.options.attributeNamePrefix+s;if(s.length)if(this.options.transformAttributeName&&(h=this.options.transformAttributeName(h)),h=ot(h,this.options),void 0!==a){this.options.trimValues&&(a=a.trim()),a=this.replaceEntitiesValue(a,i,e);const t=this.options.jPath?e.toString():e,n=this.options.attributeValueProcessor(s,a,t);o[h]=null==n?a:typeof n!=typeof a||n!==a?n:nt(a,this.options.parseAttributeValue,this.options.numberParseOptions);}else this.options.allowBooleanAttributes&&(o[h]=true);}if(!Object.keys(o).length)return;if(this.options.attributesGroupName){const t={};return t[this.options.attributesGroupName]=o,t}return o}}const Z=function(t){t=t.replace(/\r\n?/g,"\n");const e=new $("!xml");let i=e,n="";this.matcher.reset(),this.entityExpansionCount=0,this.currentExpandedLength=0;const s=new I(this.options.processEntities);for(let r=0;r<t.length;r++)if("<"===t[r])if("/"===t[r+1]){const e=tt(t,">",r,"Closing Tag is not closed.");let s=t.substring(r+2,e).trim();if(this.options.removeNSPrefix){const t=s.indexOf(":");-1!==t&&(s=s.substr(t+1));}s=rt(this.options.transformTagName,s,"",this.options).tagName,i&&(n=this.saveTextToParentTag(n,i,this.matcher));const o=this.matcher.getCurrentTag();if(s&&-1!==this.options.unpairedTags.indexOf(s))throw new Error(`Unpaired tag can not be used as closing tag: </${s}>`);o&&-1!==this.options.unpairedTags.indexOf(o)&&(this.matcher.pop(),this.tagsNodeStack.pop()),this.matcher.pop(),this.isCurrentNodeStopNode=false,i=this.tagsNodeStack.pop(),n="",r=e;}else if("?"===t[r+1]){let e=et(t,r,false,"?>");if(!e)throw new Error("Pi Tag is not closed.");if(n=this.saveTextToParentTag(n,i,this.matcher),this.options.ignoreDeclaration&&"?xml"===e.tagName||this.options.ignorePiTags);else {const t=new $(e.tagName);t.add(this.options.textNodeName,""),e.tagName!==e.tagExp&&e.attrExpPresent&&(t[":@"]=this.buildAttributesMap(e.tagExp,this.matcher,e.tagName)),this.addChild(i,t,this.matcher,r);}r=e.closeIndex+1;}else if("!--"===t.substr(r+1,3)){const e=tt(t,"--\x3e",r+4,"Comment is not closed.");if(this.options.commentPropName){const s=t.substring(r+4,e-2);n=this.saveTextToParentTag(n,i,this.matcher),i.add(this.options.commentPropName,[{[this.options.textNodeName]:s}]);}r=e;}else if("!D"===t.substr(r+1,2)){const e=s.readDocType(t,r);this.docTypeEntities=e.entities,r=e.i;}else if("!["===t.substr(r+1,2)){const e=tt(t,"]]>",r,"CDATA is not closed.")-2,s=t.substring(r+9,e);n=this.saveTextToParentTag(n,i,this.matcher);let o=this.parseTextData(s,i.tagname,this.matcher,true,false,true,true);null==o&&(o=""),this.options.cdataPropName?i.add(this.options.cdataPropName,[{[this.options.textNodeName]:s}]):i.add(this.options.textNodeName,o),r=e+2;}else {let s=et(t,r,this.options.removeNSPrefix);if(!s){const e=t.substring(Math.max(0,r-50),Math.min(t.length,r+50));throw new Error(`readTagExp returned undefined at position ${r}. Context: "${e}"`)}let o=s.tagName;const a=s.rawTagName;let h=s.tagExp,l=s.attrExpPresent,p=s.closeIndex;if(({tagName:o,tagExp:h}=rt(this.options.transformTagName,o,h,this.options)),this.options.strictReservedNames&&(o===this.options.commentPropName||o===this.options.cdataPropName||o===this.options.textNodeName||o===this.options.attributesGroupName))throw new Error(`Invalid tag name: ${o}`);i&&n&&"!xml"!==i.tagname&&(n=this.saveTextToParentTag(n,i,this.matcher,false));const u=i;u&&-1!==this.options.unpairedTags.indexOf(u.tagname)&&(i=this.tagsNodeStack.pop(),this.matcher.pop());let c=false;h.length>0&&h.lastIndexOf("/")===h.length-1&&(c=true,"/"===o[o.length-1]?(o=o.substr(0,o.length-1),h=o):h=h.substr(0,h.length-1),l=o!==h);let d,f=null;d=U(a),o!==e.tagname&&this.matcher.push(o,{},d),o!==h&&l&&(f=this.buildAttributesMap(h,this.matcher,o),f&&(R(f,this.options))),o!==e.tagname&&(this.isCurrentNodeStopNode=this.isItStopNode(this.stopNodeExpressions,this.matcher));const m=r;if(this.isCurrentNodeStopNode){let e="";if(c)r=s.closeIndex;else if(-1!==this.options.unpairedTags.indexOf(o))r=s.closeIndex;else {const i=this.readStopNodeData(t,a,p+1);if(!i)throw new Error(`Unexpected end of ${a}`);r=i.i,e=i.tagContent;}const n=new $(o);f&&(n[":@"]=f),n.add(this.options.textNodeName,e),this.matcher.pop(),this.isCurrentNodeStopNode=false,this.addChild(i,n,this.matcher,m);}else {if(c){({tagName:o,tagExp:h}=rt(this.options.transformTagName,o,h,this.options));const t=new $(o);f&&(t[":@"]=f),this.addChild(i,t,this.matcher,m),this.matcher.pop(),this.isCurrentNodeStopNode=false;}else {if(-1!==this.options.unpairedTags.indexOf(o)){const t=new $(o);f&&(t[":@"]=f),this.addChild(i,t,this.matcher,m),this.matcher.pop(),this.isCurrentNodeStopNode=false,r=s.closeIndex;continue}{const t=new $(o);if(this.tagsNodeStack.length>this.options.maxNestedTags)throw new Error("Maximum nested tags exceeded");this.tagsNodeStack.push(i),f&&(t[":@"]=f),this.addChild(i,t,this.matcher,m),i=t;}}n="",r=p;}}else n+=t[r];return e.child};function J(t,e,i,n){this.options.captureMetaData||(n=void 0);const s=this.options.jPath?i.toString():i,r=this.options.updateTag(e.tagname,s,e[":@"]);false===r||("string"==typeof r?(e.tagname=r,t.addChild(e,n)):t.addChild(e,n));}function K(t,e,i){const n=this.options.processEntities;if(!n||!n.enabled)return t;if(n.allowedTags){const s=this.options.jPath?i.toString():i;if(!(Array.isArray(n.allowedTags)?n.allowedTags.includes(e):n.allowedTags(e,s)))return t}if(n.tagFilter){const s=this.options.jPath?i.toString():i;if(!n.tagFilter(e,s))return t}for(const e of Object.keys(this.docTypeEntities)){const i=this.docTypeEntities[e],s=t.match(i.regx);if(s){if(this.entityExpansionCount+=s.length,n.maxTotalExpansions&&this.entityExpansionCount>n.maxTotalExpansions)throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${n.maxTotalExpansions}`);const e=t.length;if(t=t.replace(i.regx,i.val),n.maxExpandedLength&&(this.currentExpandedLength+=t.length-e,this.currentExpandedLength>n.maxExpandedLength))throw new Error(`Total expanded content size exceeded: ${this.currentExpandedLength} > ${n.maxExpandedLength}`)}}for(const e of Object.keys(this.lastEntities)){const i=this.lastEntities[e],s=t.match(i.regex);if(s&&(this.entityExpansionCount+=s.length,n.maxTotalExpansions&&this.entityExpansionCount>n.maxTotalExpansions))throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${n.maxTotalExpansions}`);t=t.replace(i.regex,i.val);}if(-1===t.indexOf("&"))return t;if(this.options.htmlEntities)for(const e of Object.keys(this.htmlEntities)){const i=this.htmlEntities[e],s=t.match(i.regex);if(s&&(this.entityExpansionCount+=s.length,n.maxTotalExpansions&&this.entityExpansionCount>n.maxTotalExpansions))throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${n.maxTotalExpansions}`);t=t.replace(i.regex,i.val);}return t.replace(this.ampEntity.regex,this.ampEntity.val)}function Q(t,e,i,n){return t&&(void 0===n&&(n=0===e.child.length),void 0!==(t=this.parseTextData(t,e.tagname,i,false,!!e[":@"]&&0!==Object.keys(e[":@"]).length,n))&&""!==t&&e.add(this.options.textNodeName,t),t=""),t}function H(t,e){if(!t||0===t.length)return  false;for(let i=0;i<t.length;i++)if(e.matches(t[i]))return  true;return  false}function tt(t,e,i,n){const s=t.indexOf(e,i);if(-1===s)throw new Error(n);return s+e.length-1}function et(t,e,i,n=">"){const s=function(t,e,i=">"){let n,s="";for(let r=e;r<t.length;r++){let e=t[r];if(n)e===n&&(n="");else if('"'===e||"'"===e)n=e;else if(e===i[0]){if(!i[1])return {data:s,index:r};if(t[r+1]===i[1])return {data:s,index:r}}else "\t"===e&&(e=" ");s+=e;}}(t,e+1,n);if(!s)return;let r=s.data;const o=s.index,a=r.search(/\s/);let h=r,l=true;-1!==a&&(h=r.substring(0,a),r=r.substring(a+1).trimStart());const p=h;if(i){const t=h.indexOf(":");-1!==t&&(h=h.substr(t+1),l=h!==s.data.substr(t+1));}return {tagName:h,tagExp:r,closeIndex:o,attrExpPresent:l,rawTagName:p}}function it(t,e,i){const n=i;let s=1;for(;i<t.length;i++)if("<"===t[i])if("/"===t[i+1]){const r=tt(t,">",i,`${e} is not closed`);if(t.substring(i+2,r).trim()===e&&(s--,0===s))return {tagContent:t.substring(n,i),i:r};i=r;}else if("?"===t[i+1])i=tt(t,"?>",i+1,"StopNode is not closed.");else if("!--"===t.substr(i+1,3))i=tt(t,"--\x3e",i+3,"StopNode is not closed.");else if("!["===t.substr(i+1,2))i=tt(t,"]]>",i,"StopNode is not closed.")-2;else {const n=et(t,i,">");n&&((n&&n.tagName)===e&&"/"!==n.tagExp[n.tagExp.length-1]&&s++,i=n.closeIndex);}}function nt(t,e,i){if(e&&"string"==typeof t){const e=t.trim();return "true"===e||"false"!==e&&function(t,e={}){if(e=Object.assign({},M,e),!t||"string"!=typeof t)return t;let i=t.trim();if(void 0!==e.skipLike&&e.skipLike.test(i))return t;if("0"===t)return 0;if(e.hex&&V.test(i))return function(t){if(parseInt)return parseInt(t,16);if(Number.parseInt)return Number.parseInt(t,16);if(window&&window.parseInt)return window.parseInt(t,16);throw new Error("parseInt, Number.parseInt, window.parseInt are not supported")}(i);if(isFinite(i)){if(i.includes("e")||i.includes("E"))return function(t,e,i){if(!i.eNotation)return t;const n=e.match(F);if(n){let s=n[1]||"";const r=-1===n[3].indexOf("e")?"E":"e",o=n[2],a=s?t[o.length+1]===r:t[o.length]===r;return o.length>1&&a?t:(1!==o.length||!n[3].startsWith(`.${r}`)&&n[3][0]!==r)&&o.length>0?i.leadingZeros&&!a?(e=(n[1]||"")+n[3],Number(e)):t:Number(e)}return t}(t,i,e);{const s=k.exec(i);if(s){const r=s[1]||"",o=s[2];let a=(n=s[3])&&-1!==n.indexOf(".")?("."===(n=n.replace(/0+$/,""))?n="0":"."===n[0]?n="0"+n:"."===n[n.length-1]&&(n=n.substring(0,n.length-1)),n):n;const h=r?"."===t[o.length+1]:"."===t[o.length];if(!e.leadingZeros&&(o.length>1||1===o.length&&!h))return t;{const n=Number(i),s=String(n);if(0===n)return n;if(-1!==s.search(/[eE]/))return e.eNotation?n:t;if(-1!==i.indexOf("."))return "0"===s||s===a||s===`${r}${a}`?n:t;let h=o?a:i;return o?h===s||r+h===s?n:t:h===s||h===r+s?n:t}}return t}}var n;return function(t,e,i){const n=e===1/0;switch(i.infinity.toLowerCase()){case "null":return null;case "infinity":return e;case "string":return n?"Infinity":"-Infinity";default:return t}}(t,Number(i),e)}(t,i)}return void 0!==t?t:""}function st(t,e,i){const n=Number.parseInt(t,e);return n>=0&&n<=1114111?String.fromCodePoint(n):i+t+";"}function rt(t,e,i,n){if(t){const n=t(e);i===e&&(i=n),e=n;}return {tagName:e=ot(e,n),tagExp:i}}function ot(t,e){if(a.includes(t))throw new Error(`[SECURITY] Invalid name: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`);return o.includes(t)?e.onDangerousProperty(t):t}const at=$.getMetaDataSymbol();function ht(t,e){if(!t||"object"!=typeof t)return {};if(!e)return t;const i={};for(const n in t)n.startsWith(e)?i[n.substring(e.length)]=t[n]:i[n]=t[n];return i}function lt(t,e,i){return pt(t,e,i)}function pt(t,e,i){let n;const s={};for(let r=0;r<t.length;r++){const o=t[r],a=ut(o);if(void 0!==a&&a!==e.textNodeName){const t=ht(o[":@"]||{},e.attributeNamePrefix);i.push(a,t);}if(a===e.textNodeName) void 0===n?n=o[a]:n+=""+o[a];else {if(void 0===a)continue;if(o[a]){let t=pt(o[a],e,i);const n=dt(t,e);if(o[":@"]?ct(t,o[":@"],i,e):1!==Object.keys(t).length||void 0===t[e.textNodeName]||e.alwaysCreateTextNode?0===Object.keys(t).length&&(e.alwaysCreateTextNode?t[e.textNodeName]="":t=""):t=t[e.textNodeName],void 0!==o[at]&&"object"==typeof t&&null!==t&&(t[at]=o[at]),void 0!==s[a]&&Object.prototype.hasOwnProperty.call(s,a))Array.isArray(s[a])||(s[a]=[s[a]]),s[a].push(t);else {const r=e.jPath?i.toString():i;e.isArray(a,r,n)?s[a]=[t]:s[a]=t;} void 0!==a&&a!==e.textNodeName&&i.pop();}}}return "string"==typeof n?n.length>0&&(s[e.textNodeName]=n):void 0!==n&&(s[e.textNodeName]=n),s}function ut(t){const e=Object.keys(t);for(let t=0;t<e.length;t++){const i=e[t];if(":@"!==i)return i}}function ct(t,e,i,n){if(e){const s=Object.keys(e),r=s.length;for(let o=0;o<r;o++){const r=s[o],a=r.startsWith(n.attributeNamePrefix)?r.substring(n.attributeNamePrefix.length):r,h=n.jPath?i.toString()+"."+a:i;n.isArray(r,h,true,true)?t[r]=[e[r]]:t[r]=e[r];}}}function dt(t,e){const{textNodeName:i}=e,n=Object.keys(t).length;return 0===n||!(1!==n||!t[i]&&"boolean"!=typeof t[i]&&0!==t[i])}class ft{constructor(t){this.externalEntities={},this.options=C(t);}parse(t,e){if("string"!=typeof t&&t.toString)t=t.toString();else if("string"!=typeof t)throw new Error("XML data is accepted in String or Bytes[] form.");if(e){ true===e&&(e={});const i=l(t,e);if(true!==i)throw Error(`${i.err.msg}:${i.err.line}:${i.err.col}`)}const i=new B(this.options);i.addExternalEntities(this.externalEntities);const n=i.parseXml(t);return this.options.preserveOrder||void 0===n?n:lt(n,this.options,i.matcher)}addEntity(t,e){if(-1!==e.indexOf("&"))throw new Error("Entity value can't have '&'");if(-1!==t.indexOf("&")||-1!==t.indexOf(";"))throw new Error("An entity must be set without '&' and ';'. Eg. use '#xD' for '&#xD;'");if("&"===e)throw new Error("An entity with value '&' is not permitted");this.externalEntities[t]=e;}static getMetaDataSymbol(){return $.getMetaDataSymbol()}}function gt(t,e){let i="";e.format&&e.indentBy.length>0&&(i="\n");const n=[];if(e.stopNodes&&Array.isArray(e.stopNodes))for(let t=0;t<e.stopNodes.length;t++){const i=e.stopNodes[t];"string"==typeof i?n.push(new G(i)):i instanceof G&&n.push(i);}return mt(t,e,i,new L,n)}function mt(t,e,i,n,s){let r="",o=false;if(e.maxNestedTags&&n.getDepth()>e.maxNestedTags)throw new Error("Maximum nested tags exceeded");if(!Array.isArray(t)){if(null!=t){let i=t.toString();return i=vt(i,e),i}return ""}for(let a=0;a<t.length;a++){const h=t[a],l=Et(h);if(void 0===l)continue;const p=xt(h[":@"],e);n.push(l,p);const u=wt(n,s);if(l===e.textNodeName){let t=h[l];u||(t=e.tagValueProcessor(l,t),t=vt(t,e)),o&&(r+=i),r+=t,o=false,n.pop();continue}if(l===e.cdataPropName){o&&(r+=i),r+=`<![CDATA[${h[l][0][e.textNodeName]}]]>`,o=false,n.pop();continue}if(l===e.commentPropName){r+=i+`\x3c!--${h[l][0][e.textNodeName]}--\x3e`,o=true,n.pop();continue}if("?"===l[0]){const t=yt(h[":@"],e,u),s="?xml"===l?"":i;let a=h[l][0][e.textNodeName];a=0!==a.length?" "+a:"",r+=s+`<${l}${a}${t}?>`,o=true,n.pop();continue}let c=i;""!==c&&(c+=e.indentBy);const d=i+`<${l}${yt(h[":@"],e,u)}`;let f;f=u?Nt(h[l],e):mt(h[l],e,c,n,s),-1!==e.unpairedTags.indexOf(l)?e.suppressUnpairedNode?r+=d+">":r+=d+"/>":f&&0!==f.length||!e.suppressEmptyNode?f&&f.endsWith(">")?r+=d+`>${f}${i}</${l}>`:(r+=d+">",f&&""!==i&&(f.includes("/>")||f.includes("</"))?r+=i+e.indentBy+f+i:r+=f,r+=`</${l}>`):r+=d+"/>",o=true,n.pop();}return r}function xt(t,e){if(!t||e.ignoreAttributes)return null;const i={};let n=false;for(let s in t)Object.prototype.hasOwnProperty.call(t,s)&&(i[s.startsWith(e.attributeNamePrefix)?s.substr(e.attributeNamePrefix.length):s]=t[s],n=true);return n?i:null}function Nt(t,e){if(!Array.isArray(t))return null!=t?t.toString():"";let i="";for(let n=0;n<t.length;n++){const s=t[n],r=Et(s);if(r===e.textNodeName)i+=s[r];else if(r===e.cdataPropName)i+=s[r][0][e.textNodeName];else if(r===e.commentPropName)i+=s[r][0][e.textNodeName];else {if(r&&"?"===r[0])continue;if(r){const t=bt(s[":@"],e),n=Nt(s[r],e);n&&0!==n.length?i+=`<${r}${t}>${n}</${r}>`:i+=`<${r}${t}/>`;}}}return i}function bt(t,e){let i="";if(t&&!e.ignoreAttributes)for(let n in t){if(!Object.prototype.hasOwnProperty.call(t,n))continue;let s=t[n];true===s&&e.suppressBooleanAttributes?i+=` ${n.substr(e.attributeNamePrefix.length)}`:i+=` ${n.substr(e.attributeNamePrefix.length)}="${s}"`;}return i}function Et(t){const e=Object.keys(t);for(let i=0;i<e.length;i++){const n=e[i];if(Object.prototype.hasOwnProperty.call(t,n)&&":@"!==n)return n}}function yt(t,e,i){let n="";if(t&&!e.ignoreAttributes)for(let s in t){if(!Object.prototype.hasOwnProperty.call(t,s))continue;let r;i?r=t[s]:(r=e.attributeValueProcessor(s,t[s]),r=vt(r,e)),true===r&&e.suppressBooleanAttributes?n+=` ${s.substr(e.attributeNamePrefix.length)}`:n+=` ${s.substr(e.attributeNamePrefix.length)}="${r}"`;}return n}function wt(t,e){if(!e||0===e.length)return  false;for(let i=0;i<e.length;i++)if(t.matches(e[i]))return  true;return  false}function vt(t,e){if(t&&t.length>0&&e.processEntities)for(let i=0;i<e.entities.length;i++){const n=e.entities[i];t=t.replace(n.regex,n.val);}return t}const Tt={attributeNamePrefix:"@_",attributesGroupName:false,textNodeName:"#text",ignoreAttributes:true,cdataPropName:false,format:false,indentBy:"  ",suppressEmptyNode:false,suppressUnpairedNode:true,suppressBooleanAttributes:true,tagValueProcessor:function(t,e){return e},attributeValueProcessor:function(t,e){return e},preserveOrder:false,commentPropName:false,unpairedTags:[],entities:[{regex:new RegExp("&","g"),val:"&amp;"},{regex:new RegExp(">","g"),val:"&gt;"},{regex:new RegExp("<","g"),val:"&lt;"},{regex:new RegExp("'","g"),val:"&apos;"},{regex:new RegExp('"',"g"),val:"&quot;"}],processEntities:true,stopNodes:[],oneListGroup:false,maxNestedTags:100,jPath:true};function Pt(t){if(this.options=Object.assign({},Tt,t),this.options.stopNodes&&Array.isArray(this.options.stopNodes)&&(this.options.stopNodes=this.options.stopNodes.map(t=>"string"==typeof t&&t.startsWith("*.")?".."+t.substring(2):t)),this.stopNodeExpressions=[],this.options.stopNodes&&Array.isArray(this.options.stopNodes))for(let t=0;t<this.options.stopNodes.length;t++){const e=this.options.stopNodes[t];"string"==typeof e?this.stopNodeExpressions.push(new G(e)):e instanceof G&&this.stopNodeExpressions.push(e);}var e;true===this.options.ignoreAttributes||this.options.attributesGroupName?this.isAttribute=function(){return  false}:(this.ignoreAttributesFn="function"==typeof(e=this.options.ignoreAttributes)?e:Array.isArray(e)?t=>{for(const i of e){if("string"==typeof i&&t===i)return  true;if(i instanceof RegExp&&i.test(t))return  true}}:()=>false,this.attrPrefixLen=this.options.attributeNamePrefix.length,this.isAttribute=Ct),this.processTextOrObjNode=St,this.options.format?(this.indentate=At,this.tagEndChar=">\n",this.newLine="\n"):(this.indentate=function(){return ""},this.tagEndChar=">",this.newLine="");}function St(t,e,i,n){const s=this.extractAttributes(t);if(n.push(e,s),this.checkStopNode(n)){const s=this.buildRawContent(t),r=this.buildAttributesForStopNode(t);return n.pop(),this.buildObjectNode(s,e,r,i)}const r=this.j2x(t,i+1,n);return n.pop(),void 0!==t[this.options.textNodeName]&&1===Object.keys(t).length?this.buildTextValNode(t[this.options.textNodeName],e,r.attrStr,i,n):this.buildObjectNode(r.val,e,r.attrStr,i)}function At(t){return this.options.indentBy.repeat(t)}function Ct(t){return !(!t.startsWith(this.options.attributeNamePrefix)||t===this.options.textNodeName)&&t.substr(this.attrPrefixLen)}Pt.prototype.build=function(t){if(this.options.preserveOrder)return gt(t,this.options);{Array.isArray(t)&&this.options.arrayNodeName&&this.options.arrayNodeName.length>1&&(t={[this.options.arrayNodeName]:t});const e=new L;return this.j2x(t,0,e).val}},Pt.prototype.j2x=function(t,e,i){let n="",s="";if(this.options.maxNestedTags&&i.getDepth()>=this.options.maxNestedTags)throw new Error("Maximum nested tags exceeded");const r=this.options.jPath?i.toString():i,o=this.checkStopNode(i);for(let a in t)if(Object.prototype.hasOwnProperty.call(t,a))if(void 0===t[a])this.isAttribute(a)&&(s+="");else if(null===t[a])this.isAttribute(a)||a===this.options.cdataPropName?s+="":"?"===a[0]?s+=this.indentate(e)+"<"+a+"?"+this.tagEndChar:s+=this.indentate(e)+"<"+a+"/"+this.tagEndChar;else if(t[a]instanceof Date)s+=this.buildTextValNode(t[a],a,"",e,i);else if("object"!=typeof t[a]){const h=this.isAttribute(a);if(h&&!this.ignoreAttributesFn(h,r))n+=this.buildAttrPairStr(h,""+t[a],o);else if(!h)if(a===this.options.textNodeName){let e=this.options.tagValueProcessor(a,""+t[a]);s+=this.replaceEntitiesValue(e);}else {i.push(a);const n=this.checkStopNode(i);if(i.pop(),n){const i=""+t[a];s+=""===i?this.indentate(e)+"<"+a+this.closeTag(a)+this.tagEndChar:this.indentate(e)+"<"+a+">"+i+"</"+a+this.tagEndChar;}else s+=this.buildTextValNode(t[a],a,"",e,i);}}else if(Array.isArray(t[a])){const n=t[a].length;let r="",o="";for(let h=0;h<n;h++){const n=t[a][h];if(void 0===n);else if(null===n)"?"===a[0]?s+=this.indentate(e)+"<"+a+"?"+this.tagEndChar:s+=this.indentate(e)+"<"+a+"/"+this.tagEndChar;else if("object"==typeof n)if(this.options.oneListGroup){i.push(a);const t=this.j2x(n,e+1,i);i.pop(),r+=t.val,this.options.attributesGroupName&&n.hasOwnProperty(this.options.attributesGroupName)&&(o+=t.attrStr);}else r+=this.processTextOrObjNode(n,a,e,i);else if(this.options.oneListGroup){let t=this.options.tagValueProcessor(a,n);t=this.replaceEntitiesValue(t),r+=t;}else {i.push(a);const t=this.checkStopNode(i);if(i.pop(),t){const t=""+n;r+=""===t?this.indentate(e)+"<"+a+this.closeTag(a)+this.tagEndChar:this.indentate(e)+"<"+a+">"+t+"</"+a+this.tagEndChar;}else r+=this.buildTextValNode(n,a,"",e,i);}}this.options.oneListGroup&&(r=this.buildObjectNode(r,a,o,e)),s+=r;}else if(this.options.attributesGroupName&&a===this.options.attributesGroupName){const e=Object.keys(t[a]),i=e.length;for(let s=0;s<i;s++)n+=this.buildAttrPairStr(e[s],""+t[a][e[s]],o);}else s+=this.processTextOrObjNode(t[a],a,e,i);return {attrStr:n,val:s}},Pt.prototype.buildAttrPairStr=function(t,e,i){return i||(e=this.options.attributeValueProcessor(t,""+e),e=this.replaceEntitiesValue(e)),this.options.suppressBooleanAttributes&&"true"===e?" "+t:" "+t+'="'+e+'"'},Pt.prototype.extractAttributes=function(t){if(!t||"object"!=typeof t)return null;const e={};let i=false;if(this.options.attributesGroupName&&t[this.options.attributesGroupName]){const n=t[this.options.attributesGroupName];for(let t in n)Object.prototype.hasOwnProperty.call(n,t)&&(e[t.startsWith(this.options.attributeNamePrefix)?t.substring(this.options.attributeNamePrefix.length):t]=n[t],i=true);}else for(let n in t){if(!Object.prototype.hasOwnProperty.call(t,n))continue;const s=this.isAttribute(n);s&&(e[s]=t[n],i=true);}return i?e:null},Pt.prototype.buildRawContent=function(t){if("string"==typeof t)return t;if("object"!=typeof t||null===t)return String(t);if(void 0!==t[this.options.textNodeName])return t[this.options.textNodeName];let e="";for(let i in t){if(!Object.prototype.hasOwnProperty.call(t,i))continue;if(this.isAttribute(i))continue;if(this.options.attributesGroupName&&i===this.options.attributesGroupName)continue;const n=t[i];if(i===this.options.textNodeName)e+=n;else if(Array.isArray(n)){for(let t of n)if("string"==typeof t||"number"==typeof t)e+=`<${i}>${t}</${i}>`;else if("object"==typeof t&&null!==t){const n=this.buildRawContent(t),s=this.buildAttributesForStopNode(t);e+=""===n?`<${i}${s}/>`:`<${i}${s}>${n}</${i}>`;}}else if("object"==typeof n&&null!==n){const t=this.buildRawContent(n),s=this.buildAttributesForStopNode(n);e+=""===t?`<${i}${s}/>`:`<${i}${s}>${t}</${i}>`;}else e+=`<${i}>${n}</${i}>`;}return e},Pt.prototype.buildAttributesForStopNode=function(t){if(!t||"object"!=typeof t)return "";let e="";if(this.options.attributesGroupName&&t[this.options.attributesGroupName]){const i=t[this.options.attributesGroupName];for(let t in i){if(!Object.prototype.hasOwnProperty.call(i,t))continue;const n=t.startsWith(this.options.attributeNamePrefix)?t.substring(this.options.attributeNamePrefix.length):t,s=i[t];true===s&&this.options.suppressBooleanAttributes?e+=" "+n:e+=" "+n+'="'+s+'"';}}else for(let i in t){if(!Object.prototype.hasOwnProperty.call(t,i))continue;const n=this.isAttribute(i);if(n){const s=t[i];true===s&&this.options.suppressBooleanAttributes?e+=" "+n:e+=" "+n+'="'+s+'"';}}return e},Pt.prototype.buildObjectNode=function(t,e,i,n){if(""===t)return "?"===e[0]?this.indentate(n)+"<"+e+i+"?"+this.tagEndChar:this.indentate(n)+"<"+e+i+this.closeTag(e)+this.tagEndChar;{let s="</"+e+this.tagEndChar,r="";return "?"===e[0]&&(r="?",s=""),!i&&""!==i||-1!==t.indexOf("<")?false!==this.options.commentPropName&&e===this.options.commentPropName&&0===r.length?this.indentate(n)+`\x3c!--${t}--\x3e`+this.newLine:this.indentate(n)+"<"+e+i+r+this.tagEndChar+t+this.indentate(n)+s:this.indentate(n)+"<"+e+i+r+">"+t+s}},Pt.prototype.closeTag=function(t){let e="";return  -1!==this.options.unpairedTags.indexOf(t)?this.options.suppressUnpairedNode||(e="/"):e=this.options.suppressEmptyNode?"/":`></${t}`,e},Pt.prototype.checkStopNode=function(t){if(!this.stopNodeExpressions||0===this.stopNodeExpressions.length)return  false;for(let e=0;e<this.stopNodeExpressions.length;e++)if(t.matches(this.stopNodeExpressions[e]))return  true;return  false},Pt.prototype.buildTextValNode=function(t,e,i,n,s){if(false!==this.options.cdataPropName&&e===this.options.cdataPropName)return this.indentate(n)+`<![CDATA[${t}]]>`+this.newLine;if(false!==this.options.commentPropName&&e===this.options.commentPropName)return this.indentate(n)+`\x3c!--${t}--\x3e`+this.newLine;if("?"===e[0])return this.indentate(n)+"<"+e+i+"?"+this.tagEndChar;{let s=this.options.tagValueProcessor(e,t);return s=this.replaceEntitiesValue(s),""===s?this.indentate(n)+"<"+e+i+this.closeTag(e)+this.tagEndChar:this.indentate(n)+"<"+e+i+">"+s+"</"+e+this.tagEndChar}},Pt.prototype.replaceEntitiesValue=function(t){if(t&&t.length>0&&this.options.processEntities)for(let e=0;e<this.options.entities.length;e++){const i=this.options.entities[e];t=t.replace(i.regex,i.val);}return t};const Ot=Pt,$t={validate:l};fxp.exports=e;})();
+	(()=>{var t={d:(e,n)=>{for(var i in n)t.o(n,i)&&!t.o(e,i)&&Object.defineProperty(e,i,{enumerable:true,get:n[i]});},o:(t,e)=>Object.prototype.hasOwnProperty.call(t,e),r:t=>{"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(t,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(t,"__esModule",{value:true});}},e={};t.r(e),t.d(e,{XMLBuilder:()=>It,XMLParser:()=>xt,XMLValidator:()=>jt});const n=":A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF\\u200C-\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD",i=new RegExp("^["+n+"]["+n+"\\-.\\d\\u00B7\\u0300-\\u036F\\u203F-\\u2040]*$");function s(t,e){const n=[];let i=e.exec(t);for(;i;){const s=[];s.startIndex=e.lastIndex-i[0].length;const r=i.length;for(let t=0;t<r;t++)s.push(i[t]);n.push(s),i=e.exec(t);}return n}const r=function(t){return !(null==i.exec(t))},o=["hasOwnProperty","toString","valueOf","__defineGetter__","__defineSetter__","__lookupGetter__","__lookupSetter__"],a=["__proto__","constructor","prototype"],h={allowBooleanAttributes:false,unpairedTags:[]};function l(t,e){e=Object.assign({},h,e);const n=[];let i=false,s=false;"\ufeff"===t[0]&&(t=t.substr(1));for(let r=0;r<t.length;r++)if("<"===t[r]&&"?"===t[r+1]){if(r+=2,r=p(t,r),r.err)return r}else {if("<"!==t[r]){if(u(t[r]))continue;return b("InvalidChar","char '"+t[r]+"' is not expected.",w(t,r))}{let o=r;if(r++,"!"===t[r]){r=c(t,r);continue}{let a=false;"/"===t[r]&&(a=true,r++);let h="";for(;r<t.length&&">"!==t[r]&&" "!==t[r]&&"\t"!==t[r]&&"\n"!==t[r]&&"\r"!==t[r];r++)h+=t[r];if(h=h.trim(),"/"===h[h.length-1]&&(h=h.substring(0,h.length-1),r--),!y(h)){let e;return e=0===h.trim().length?"Invalid space after '<'.":"Tag '"+h+"' is an invalid name.",b("InvalidTag",e,w(t,r))}const l=f(t,r);if(false===l)return b("InvalidAttr","Attributes for '"+h+"' have open quote.",w(t,r));let d=l.value;if(r=l.index,"/"===d[d.length-1]){const n=r-d.length;d=d.substring(0,d.length-1);const s=x(d,e);if(true!==s)return b(s.err.code,s.err.msg,w(t,n+s.err.line));i=true;}else if(a){if(!l.tagClosed)return b("InvalidTag","Closing tag '"+h+"' doesn't have proper closing.",w(t,r));if(d.trim().length>0)return b("InvalidTag","Closing tag '"+h+"' can't have attributes or invalid starting.",w(t,o));if(0===n.length)return b("InvalidTag","Closing tag '"+h+"' has not been opened.",w(t,o));{const e=n.pop();if(h!==e.tagName){let n=w(t,e.tagStartPos);return b("InvalidTag","Expected closing tag '"+e.tagName+"' (opened in line "+n.line+", col "+n.col+") instead of closing tag '"+h+"'.",w(t,o))}0==n.length&&(s=true);}}else {const a=x(d,e);if(true!==a)return b(a.err.code,a.err.msg,w(t,r-d.length+a.err.line));if(true===s)return b("InvalidXml","Multiple possible root nodes found.",w(t,r));-1!==e.unpairedTags.indexOf(h)||n.push({tagName:h,tagStartPos:o}),i=true;}for(r++;r<t.length;r++)if("<"===t[r]){if("!"===t[r+1]){r++,r=c(t,r);continue}if("?"!==t[r+1])break;if(r=p(t,++r),r.err)return r}else if("&"===t[r]){const e=N(t,r);if(-1==e)return b("InvalidChar","char '&' is not expected.",w(t,r));r=e;}else if(true===s&&!u(t[r]))return b("InvalidXml","Extra text at the end",w(t,r));"<"===t[r]&&r--;}}}return i?1==n.length?b("InvalidTag","Unclosed tag '"+n[0].tagName+"'.",w(t,n[0].tagStartPos)):!(n.length>0)||b("InvalidXml","Invalid '"+JSON.stringify(n.map(t=>t.tagName),null,4).replace(/\r?\n/g,"")+"' found.",{line:1,col:1}):b("InvalidXml","Start tag expected.",1)}function u(t){return " "===t||"\t"===t||"\n"===t||"\r"===t}function p(t,e){const n=e;for(;e<t.length;e++)if("?"==t[e]||" "==t[e]){const i=t.substr(n,e-n);if(e>5&&"xml"===i)return b("InvalidXml","XML declaration allowed only at the start of the document.",w(t,e));if("?"==t[e]&&">"==t[e+1]){e++;break}continue}return e}function c(t,e){if(t.length>e+5&&"-"===t[e+1]&&"-"===t[e+2]){for(e+=3;e<t.length;e++)if("-"===t[e]&&"-"===t[e+1]&&">"===t[e+2]){e+=2;break}}else if(t.length>e+8&&"D"===t[e+1]&&"O"===t[e+2]&&"C"===t[e+3]&&"T"===t[e+4]&&"Y"===t[e+5]&&"P"===t[e+6]&&"E"===t[e+7]){let n=1;for(e+=8;e<t.length;e++)if("<"===t[e])n++;else if(">"===t[e]&&(n--,0===n))break}else if(t.length>e+9&&"["===t[e+1]&&"C"===t[e+2]&&"D"===t[e+3]&&"A"===t[e+4]&&"T"===t[e+5]&&"A"===t[e+6]&&"["===t[e+7])for(e+=8;e<t.length;e++)if("]"===t[e]&&"]"===t[e+1]&&">"===t[e+2]){e+=2;break}return e}const d='"',g="'";function f(t,e){let n="",i="",s=false;for(;e<t.length;e++){if(t[e]===d||t[e]===g)""===i?i=t[e]:i!==t[e]||(i="");else if(">"===t[e]&&""===i){s=true;break}n+=t[e];}return ""===i&&{value:n,index:e,tagClosed:s}}const m=new RegExp("(\\s*)([^\\s=]+)(\\s*=)?(\\s*(['\"])(([\\s\\S])*?)\\5)?","g");function x(t,e){const n=s(t,m),i={};for(let t=0;t<n.length;t++){if(0===n[t][1].length)return b("InvalidAttr","Attribute '"+n[t][2]+"' has no space in starting.",v(n[t]));if(void 0!==n[t][3]&&void 0===n[t][4])return b("InvalidAttr","Attribute '"+n[t][2]+"' is without value.",v(n[t]));if(void 0===n[t][3]&&!e.allowBooleanAttributes)return b("InvalidAttr","boolean attribute '"+n[t][2]+"' is not allowed.",v(n[t]));const s=n[t][2];if(!E(s))return b("InvalidAttr","Attribute '"+s+"' is an invalid name.",v(n[t]));if(Object.prototype.hasOwnProperty.call(i,s))return b("InvalidAttr","Attribute '"+s+"' is repeated.",v(n[t]));i[s]=1;}return  true}function N(t,e){if(";"===t[++e])return  -1;if("#"===t[e])return function(t,e){let n=/\d/;for("x"===t[e]&&(e++,n=/[\da-fA-F]/);e<t.length;e++){if(";"===t[e])return e;if(!t[e].match(n))break}return  -1}(t,++e);let n=0;for(;e<t.length;e++,n++)if(!(t[e].match(/\w/)&&n<20)){if(";"===t[e])break;return  -1}return e}function b(t,e,n){return {err:{code:t,msg:e,line:n.line||n,col:n.col}}}function E(t){return r(t)}function y(t){return r(t)}function w(t,e){const n=t.substring(0,e).split(/\r?\n/);return {line:n.length,col:n[n.length-1].length+1}}function v(t){return t.startIndex+t[1].length}const S=t=>o.includes(t)?"__"+t:t,T={preserveOrder:false,attributeNamePrefix:"@_",attributesGroupName:false,textNodeName:"#text",ignoreAttributes:true,removeNSPrefix:false,allowBooleanAttributes:false,parseTagValue:true,parseAttributeValue:false,trimValues:true,cdataPropName:false,numberParseOptions:{hex:true,leadingZeros:true,eNotation:true},tagValueProcessor:function(t,e){return e},attributeValueProcessor:function(t,e){return e},stopNodes:[],alwaysCreateTextNode:false,isArray:()=>false,commentPropName:false,unpairedTags:[],processEntities:true,htmlEntities:false,ignoreDeclaration:false,ignorePiTags:false,transformTagName:false,transformAttributeName:false,updateTag:function(t,e,n){return t},captureMetaData:false,maxNestedTags:100,strictReservedNames:true,jPath:true,onDangerousProperty:S};function A(t,e){if("string"!=typeof t)return;const n=t.toLowerCase();if(o.some(t=>n===t.toLowerCase()))throw new Error(`[SECURITY] Invalid ${e}: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`);if(a.some(t=>n===t.toLowerCase()))throw new Error(`[SECURITY] Invalid ${e}: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`)}function C(t){return "boolean"==typeof t?{enabled:t,maxEntitySize:1e4,maxExpansionDepth:10,maxTotalExpansions:1e3,maxExpandedLength:1e5,maxEntityCount:100,allowedTags:null,tagFilter:null}:"object"==typeof t&&null!==t?{enabled:false!==t.enabled,maxEntitySize:Math.max(1,t.maxEntitySize??1e4),maxExpansionDepth:Math.max(1,t.maxExpansionDepth??1e4),maxTotalExpansions:Math.max(1,t.maxTotalExpansions??1/0),maxExpandedLength:Math.max(1,t.maxExpandedLength??1e5),maxEntityCount:Math.max(1,t.maxEntityCount??1e3),allowedTags:t.allowedTags??null,tagFilter:t.tagFilter??null}:C(true)}const P=function(t){const e=Object.assign({},T,t),n=[{value:e.attributeNamePrefix,name:"attributeNamePrefix"},{value:e.attributesGroupName,name:"attributesGroupName"},{value:e.textNodeName,name:"textNodeName"},{value:e.cdataPropName,name:"cdataPropName"},{value:e.commentPropName,name:"commentPropName"}];for(const{value:t,name:e}of n)t&&A(t,e);return null===e.onDangerousProperty&&(e.onDangerousProperty=S),e.processEntities=C(e.processEntities),e.unpairedTagsSet=new Set(e.unpairedTags),e.stopNodes&&Array.isArray(e.stopNodes)&&(e.stopNodes=e.stopNodes.map(t=>"string"==typeof t&&t.startsWith("*.")?".."+t.substring(2):t)),e};let _;_="function"!=typeof Symbol?"@@xmlMetadata":Symbol("XML Node Metadata");class ${constructor(t){this.tagname=t,this.child=[],this[":@"]=Object.create(null);}add(t,e){"__proto__"===t&&(t="#__proto__"),this.child.push({[t]:e});}addChild(t,e){"__proto__"===t.tagname&&(t.tagname="#__proto__"),t[":@"]&&Object.keys(t[":@"]).length>0?this.child.push({[t.tagname]:t.child,":@":t[":@"]}):this.child.push({[t.tagname]:t.child}),void 0!==e&&(this.child[this.child.length-1][_]={startIndex:e});}static getMetaDataSymbol(){return _}}class O{constructor(t){this.suppressValidationErr=!t,this.options=t;}readDocType(t,e){const n=Object.create(null);let i=0;if("O"!==t[e+3]||"C"!==t[e+4]||"T"!==t[e+5]||"Y"!==t[e+6]||"P"!==t[e+7]||"E"!==t[e+8])throw new Error("Invalid Tag instead of DOCTYPE");{e+=9;let s=1,r=false,o=false,a="";for(;e<t.length;e++)if("<"!==t[e]||o)if(">"===t[e]){if(o?"-"===t[e-1]&&"-"===t[e-2]&&(o=false,s--):s--,0===s)break}else "["===t[e]?r=true:a+=t[e];else {if(r&&j(t,"!ENTITY",e)){let s,r;if(e+=7,[s,r,e]=this.readEntityExp(t,e+1,this.suppressValidationErr),-1===r.indexOf("&")){if(false!==this.options.enabled&&null!=this.options.maxEntityCount&&i>=this.options.maxEntityCount)throw new Error(`Entity count (${i+1}) exceeds maximum allowed (${this.options.maxEntityCount})`);const t=s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");n[s]={regx:RegExp(`&${t};`,"g"),val:r},i++;}}else if(r&&j(t,"!ELEMENT",e)){e+=8;const{index:n}=this.readElementExp(t,e+1);e=n;}else if(r&&j(t,"!ATTLIST",e))e+=8;else if(r&&j(t,"!NOTATION",e)){e+=9;const{index:n}=this.readNotationExp(t,e+1,this.suppressValidationErr);e=n;}else {if(!j(t,"!--",e))throw new Error("Invalid DOCTYPE");o=true;}s++,a="";}if(0!==s)throw new Error("Unclosed DOCTYPE")}return {entities:n,i:e}}readEntityExp(t,e){const n=e=I(t,e);for(;e<t.length&&!/\s/.test(t[e])&&'"'!==t[e]&&"'"!==t[e];)e++;let i=t.substring(n,e);if(D(i),e=I(t,e),!this.suppressValidationErr){if("SYSTEM"===t.substring(e,e+6).toUpperCase())throw new Error("External entities are not supported");if("%"===t[e])throw new Error("Parameter entities are not supported")}let s="";if([e,s]=this.readIdentifierVal(t,e,"entity"),false!==this.options.enabled&&null!=this.options.maxEntitySize&&s.length>this.options.maxEntitySize)throw new Error(`Entity "${i}" size (${s.length}) exceeds maximum allowed size (${this.options.maxEntitySize})`);return [i,s,--e]}readNotationExp(t,e){const n=e=I(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let i=t.substring(n,e);!this.suppressValidationErr&&D(i),e=I(t,e);const s=t.substring(e,e+6).toUpperCase();if(!this.suppressValidationErr&&"SYSTEM"!==s&&"PUBLIC"!==s)throw new Error(`Expected SYSTEM or PUBLIC, found "${s}"`);e+=s.length,e=I(t,e);let r=null,o=null;if("PUBLIC"===s)[e,r]=this.readIdentifierVal(t,e,"publicIdentifier"),'"'!==t[e=I(t,e)]&&"'"!==t[e]||([e,o]=this.readIdentifierVal(t,e,"systemIdentifier"));else if("SYSTEM"===s&&([e,o]=this.readIdentifierVal(t,e,"systemIdentifier"),!this.suppressValidationErr&&!o))throw new Error("Missing mandatory system identifier for SYSTEM notation");return {notationName:i,publicIdentifier:r,systemIdentifier:o,index:--e}}readIdentifierVal(t,e,n){let i="";const s=t[e];if('"'!==s&&"'"!==s)throw new Error(`Expected quoted string, found "${s}"`);const r=++e;for(;e<t.length&&t[e]!==s;)e++;if(i=t.substring(r,e),t[e]!==s)throw new Error(`Unterminated ${n} value`);return [++e,i]}readElementExp(t,e){const n=e=I(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let i=t.substring(n,e);if(!this.suppressValidationErr&&!r(i))throw new Error(`Invalid element name: "${i}"`);let s="";if("E"===t[e=I(t,e)]&&j(t,"MPTY",e))e+=4;else if("A"===t[e]&&j(t,"NY",e))e+=2;else if("("===t[e]){const n=++e;for(;e<t.length&&")"!==t[e];)e++;if(s=t.substring(n,e),")"!==t[e])throw new Error("Unterminated content model")}else if(!this.suppressValidationErr)throw new Error(`Invalid Element Expression, found "${t[e]}"`);return {elementName:i,contentModel:s.trim(),index:e}}readAttlistExp(t,e){let n=e=I(t,e);for(;e<t.length&&!/\s/.test(t[e]);)e++;let i=t.substring(n,e);for(D(i),n=e=I(t,e);e<t.length&&!/\s/.test(t[e]);)e++;let s=t.substring(n,e);if(!D(s))throw new Error(`Invalid attribute name: "${s}"`);e=I(t,e);let r="";if("NOTATION"===t.substring(e,e+8).toUpperCase()){if(r="NOTATION","("!==t[e=I(t,e+=8)])throw new Error(`Expected '(', found "${t[e]}"`);e++;let n=[];for(;e<t.length&&")"!==t[e];){const i=e;for(;e<t.length&&"|"!==t[e]&&")"!==t[e];)e++;let s=t.substring(i,e);if(s=s.trim(),!D(s))throw new Error(`Invalid notation name: "${s}"`);n.push(s),"|"===t[e]&&(e++,e=I(t,e));}if(")"!==t[e])throw new Error("Unterminated list of notations");e++,r+=" ("+n.join("|")+")";}else {const n=e;for(;e<t.length&&!/\s/.test(t[e]);)e++;r+=t.substring(n,e);const i=["CDATA","ID","IDREF","IDREFS","ENTITY","ENTITIES","NMTOKEN","NMTOKENS"];if(!this.suppressValidationErr&&!i.includes(r.toUpperCase()))throw new Error(`Invalid attribute type: "${r}"`)}e=I(t,e);let o="";return "#REQUIRED"===t.substring(e,e+8).toUpperCase()?(o="#REQUIRED",e+=8):"#IMPLIED"===t.substring(e,e+7).toUpperCase()?(o="#IMPLIED",e+=7):[e,o]=this.readIdentifierVal(t,e,"ATTLIST"),{elementName:i,attributeName:s,attributeType:r,defaultValue:o,index:e}}}const I=(t,e)=>{for(;e<t.length&&/\s/.test(t[e]);)e++;return e};function j(t,e,n){for(let i=0;i<e.length;i++)if(e[i]!==t[n+i+1])return  false;return  true}function D(t){if(r(t))return t;throw new Error(`Invalid entity name ${t}`)}const M=/^[-+]?0x[a-fA-F0-9]+$/,V=/^([\-\+])?(0*)([0-9]*(\.[0-9]*)?)$/,k={hex:true,leadingZeros:true,decimalPoint:".",eNotation:true,infinity:"original"};const F=/^([-+])?(0*)(\d*(\.\d*)?[eE][-\+]?\d+)$/;class L{constructor(t){this._matcher=t;}get separator(){return this._matcher.separator}getCurrentTag(){const t=this._matcher.path;return t.length>0?t[t.length-1].tag:void 0}getCurrentNamespace(){const t=this._matcher.path;return t.length>0?t[t.length-1].namespace:void 0}getAttrValue(t){const e=this._matcher.path;if(0!==e.length)return e[e.length-1].values?.[t]}hasAttr(t){const e=this._matcher.path;if(0===e.length)return  false;const n=e[e.length-1];return void 0!==n.values&&t in n.values}getPosition(){const t=this._matcher.path;return 0===t.length?-1:t[t.length-1].position??0}getCounter(){const t=this._matcher.path;return 0===t.length?-1:t[t.length-1].counter??0}getIndex(){return this.getPosition()}getDepth(){return this._matcher.path.length}toString(t,e=true){return this._matcher.toString(t,e)}toArray(){return this._matcher.path.map(t=>t.tag)}matches(t){return this._matcher.matches(t)}matchesAny(t){return t.matchesAny(this._matcher)}}class G{constructor(t={}){this.separator=t.separator||".",this.path=[],this.siblingStacks=[],this._pathStringCache=null,this._view=new L(this);}push(t,e=null,n=null){this._pathStringCache=null,this.path.length>0&&(this.path[this.path.length-1].values=void 0);const i=this.path.length;this.siblingStacks[i]||(this.siblingStacks[i]=new Map);const s=this.siblingStacks[i],r=n?`${n}:${t}`:t,o=s.get(r)||0;let a=0;for(const t of s.values())a+=t;s.set(r,o+1);const h={tag:t,position:a,counter:o};null!=n&&(h.namespace=n),null!=e&&(h.values=e),this.path.push(h);}pop(){if(0===this.path.length)return;this._pathStringCache=null;const t=this.path.pop();return this.siblingStacks.length>this.path.length+1&&(this.siblingStacks.length=this.path.length+1),t}updateCurrent(t){if(this.path.length>0){const e=this.path[this.path.length-1];null!=t&&(e.values=t);}}getCurrentTag(){return this.path.length>0?this.path[this.path.length-1].tag:void 0}getCurrentNamespace(){return this.path.length>0?this.path[this.path.length-1].namespace:void 0}getAttrValue(t){if(0!==this.path.length)return this.path[this.path.length-1].values?.[t]}hasAttr(t){if(0===this.path.length)return  false;const e=this.path[this.path.length-1];return void 0!==e.values&&t in e.values}getPosition(){return 0===this.path.length?-1:this.path[this.path.length-1].position??0}getCounter(){return 0===this.path.length?-1:this.path[this.path.length-1].counter??0}getIndex(){return this.getPosition()}getDepth(){return this.path.length}toString(t,e=true){const n=t||this.separator;if(n===this.separator&&true===e){if(null!==this._pathStringCache)return this._pathStringCache;const t=this.path.map(t=>t.namespace?`${t.namespace}:${t.tag}`:t.tag).join(n);return this._pathStringCache=t,t}return this.path.map(t=>e&&t.namespace?`${t.namespace}:${t.tag}`:t.tag).join(n)}toArray(){return this.path.map(t=>t.tag)}reset(){this._pathStringCache=null,this.path=[],this.siblingStacks=[];}matches(t){const e=t.segments;return 0!==e.length&&(t.hasDeepWildcard()?this._matchWithDeepWildcard(e):this._matchSimple(e))}_matchSimple(t){if(this.path.length!==t.length)return  false;for(let e=0;e<t.length;e++)if(!this._matchSegment(t[e],this.path[e],e===this.path.length-1))return  false;return  true}_matchWithDeepWildcard(t){let e=this.path.length-1,n=t.length-1;for(;n>=0&&e>=0;){const i=t[n];if("deep-wildcard"===i.type){if(n--,n<0)return  true;const i=t[n];let s=false;for(let t=e;t>=0;t--)if(this._matchSegment(i,this.path[t],t===this.path.length-1)){e=t-1,n--,s=true;break}if(!s)return  false}else {if(!this._matchSegment(i,this.path[e],e===this.path.length-1))return  false;e--,n--;}}return n<0}_matchSegment(t,e,n){if("*"!==t.tag&&t.tag!==e.tag)return  false;if(void 0!==t.namespace&&"*"!==t.namespace&&t.namespace!==e.namespace)return  false;if(void 0!==t.attrName){if(!n)return  false;if(!e.values||!(t.attrName in e.values))return  false;if(void 0!==t.attrValue&&String(e.values[t.attrName])!==String(t.attrValue))return  false}if(void 0!==t.position){if(!n)return  false;const i=e.counter??0;if("first"===t.position&&0!==i)return  false;if("odd"===t.position&&i%2!=1)return  false;if("even"===t.position&&i%2!=0)return  false;if("nth"===t.position&&i!==t.positionValue)return  false}return  true}matchesAny(t){return t.matchesAny(this)}snapshot(){return {path:this.path.map(t=>({...t})),siblingStacks:this.siblingStacks.map(t=>new Map(t))}}restore(t){this._pathStringCache=null,this.path=t.path.map(t=>({...t})),this.siblingStacks=t.siblingStacks.map(t=>new Map(t));}readOnly(){return this._view}}class R{constructor(t,e={},n){this.pattern=t,this.separator=e.separator||".",this.segments=this._parse(t),this.data=n,this._hasDeepWildcard=this.segments.some(t=>"deep-wildcard"===t.type),this._hasAttributeCondition=this.segments.some(t=>void 0!==t.attrName),this._hasPositionSelector=this.segments.some(t=>void 0!==t.position);}_parse(t){const e=[];let n=0,i="";for(;n<t.length;)t[n]===this.separator?n+1<t.length&&t[n+1]===this.separator?(i.trim()&&(e.push(this._parseSegment(i.trim())),i=""),e.push({type:"deep-wildcard"}),n+=2):(i.trim()&&e.push(this._parseSegment(i.trim())),i="",n++):(i+=t[n],n++);return i.trim()&&e.push(this._parseSegment(i.trim())),e}_parseSegment(t){const e={type:"tag"};let n=null,i=t;const s=t.match(/^([^\[]+)(\[[^\]]*\])(.*)$/);if(s&&(i=s[1]+s[3],s[2])){const t=s[2].slice(1,-1);t&&(n=t);}let r,o,a=i;if(i.includes("::")){const e=i.indexOf("::");if(r=i.substring(0,e).trim(),a=i.substring(e+2).trim(),!r)throw new Error(`Invalid namespace in pattern: ${t}`)}let h=null;if(a.includes(":")){const t=a.lastIndexOf(":"),e=a.substring(0,t).trim(),n=a.substring(t+1).trim();["first","last","odd","even"].includes(n)||/^nth\(\d+\)$/.test(n)?(o=e,h=n):o=a;}else o=a;if(!o)throw new Error(`Invalid segment pattern: ${t}`);if(e.tag=o,r&&(e.namespace=r),n)if(n.includes("=")){const t=n.indexOf("=");e.attrName=n.substring(0,t).trim(),e.attrValue=n.substring(t+1).trim();}else e.attrName=n.trim();if(h){const t=h.match(/^nth\((\d+)\)$/);t?(e.position="nth",e.positionValue=parseInt(t[1],10)):e.position=h;}return e}get length(){return this.segments.length}hasDeepWildcard(){return this._hasDeepWildcard}hasAttributeCondition(){return this._hasAttributeCondition}hasPositionSelector(){return this._hasPositionSelector}toString(){return this.pattern}}class B{constructor(){this._byDepthAndTag=new Map,this._wildcardByDepth=new Map,this._deepWildcards=[],this._patterns=new Set,this._sealed=false;}add(t){if(this._sealed)throw new TypeError("ExpressionSet is sealed. Create a new ExpressionSet to add more expressions.");if(this._patterns.has(t.pattern))return this;if(this._patterns.add(t.pattern),t.hasDeepWildcard())return this._deepWildcards.push(t),this;const e=t.length,n=t.segments[t.segments.length-1],i=n?.tag;if(i&&"*"!==i){const n=`${e}:${i}`;this._byDepthAndTag.has(n)||this._byDepthAndTag.set(n,[]),this._byDepthAndTag.get(n).push(t);}else this._wildcardByDepth.has(e)||this._wildcardByDepth.set(e,[]),this._wildcardByDepth.get(e).push(t);return this}addAll(t){for(const e of t)this.add(e);return this}has(t){return this._patterns.has(t.pattern)}get size(){return this._patterns.size}seal(){return this._sealed=true,this}get isSealed(){return this._sealed}matchesAny(t){return null!==this.findMatch(t)}findMatch(t){const e=t.getDepth(),n=`${e}:${t.getCurrentTag()}`,i=this._byDepthAndTag.get(n);if(i)for(let e=0;e<i.length;e++)if(t.matches(i[e]))return i[e];const s=this._wildcardByDepth.get(e);if(s)for(let e=0;e<s.length;e++)if(t.matches(s[e]))return s[e];for(let e=0;e<this._deepWildcards.length;e++)if(t.matches(this._deepWildcards[e]))return this._deepWildcards[e];return null}}function W(t,e){if(!t)return {};const n=e.attributesGroupName?t[e.attributesGroupName]:t;if(!n)return {};const i={};for(const t in n)t.startsWith(e.attributeNamePrefix)?i[t.substring(e.attributeNamePrefix.length)]=n[t]:i[t]=n[t];return i}function U(t){if(!t||"string"!=typeof t)return;const e=t.indexOf(":");if(-1!==e&&e>0){const n=t.substring(0,e);if("xmlns"!==n)return n}}class Y{constructor(t){var e;this.options=t,this.currentNode=null,this.tagsNodeStack=[],this.docTypeEntities={},this.lastEntities={apos:{regex:/&(apos|#39|#x27);/g,val:"'"},gt:{regex:/&(gt|#62|#x3E);/g,val:">"},lt:{regex:/&(lt|#60|#x3C);/g,val:"<"},quot:{regex:/&(quot|#34|#x22);/g,val:'"'}},this.ampEntity={regex:/&(amp|#38|#x26);/g,val:"&"},this.htmlEntities={space:{regex:/&(nbsp|#160);/g,val:" "},cent:{regex:/&(cent|#162);/g,val:"¢"},pound:{regex:/&(pound|#163);/g,val:"£"},yen:{regex:/&(yen|#165);/g,val:"¥"},euro:{regex:/&(euro|#8364);/g,val:"€"},copyright:{regex:/&(copy|#169);/g,val:"©"},reg:{regex:/&(reg|#174);/g,val:"®"},inr:{regex:/&(inr|#8377);/g,val:"₹"},num_dec:{regex:/&#([0-9]{1,7});/g,val:(t,e)=>at(e,10,"&#")},num_hex:{regex:/&#x([0-9a-fA-F]{1,6});/g,val:(t,e)=>at(e,16,"&#x")}},this.addExternalEntities=z,this.parseXml=J,this.parseTextData=X,this.resolveNameSpace=K,this.buildAttributesMap=Z,this.isItStopNode=et,this.replaceEntitiesValue=H,this.readStopNodeData=rt,this.saveTextToParentTag=tt,this.addChild=Q,this.ignoreAttributesFn="function"==typeof(e=this.options.ignoreAttributes)?e:Array.isArray(e)?t=>{for(const n of e){if("string"==typeof n&&t===n)return  true;if(n instanceof RegExp&&n.test(t))return  true}}:()=>false,this.entityExpansionCount=0,this.currentExpandedLength=0,this.matcher=new G,this.readonlyMatcher=this.matcher.readOnly(),this.isCurrentNodeStopNode=false,this.stopNodeExpressionsSet=new B;const n=this.options.stopNodes;if(n&&n.length>0){for(let t=0;t<n.length;t++){const e=n[t];"string"==typeof e?this.stopNodeExpressionsSet.add(new R(e)):e instanceof R&&this.stopNodeExpressionsSet.add(e);}this.stopNodeExpressionsSet.seal();}}}function z(t){const e=Object.keys(t);for(let n=0;n<e.length;n++){const i=e[n],s=i.replace(/[.\-+*:]/g,"\\.");this.lastEntities[i]={regex:new RegExp("&"+s+";","g"),val:t[i]};}}function X(t,e,n,i,s,r,o){const a=this.options;if(void 0!==t&&(a.trimValues&&!i&&(t=t.trim()),t.length>0)){o||(t=this.replaceEntitiesValue(t,e,n));const i=a.jPath?n.toString():n,h=a.tagValueProcessor(e,t,i,s,r);return null==h?t:typeof h!=typeof t||h!==t?h:a.trimValues||t.trim()===t?ot(t,a.parseTagValue,a.numberParseOptions):t}}function K(t){if(this.options.removeNSPrefix){const e=t.split(":"),n="/"===t.charAt(0)?"/":"";if("xmlns"===e[0])return "";2===e.length&&(t=n+e[1]);}return t}const q=new RegExp("([^\\s=]+)\\s*(=\\s*(['\"])([\\s\\S]*?)\\3)?","gm");function Z(t,e,n){const i=this.options;if(true!==i.ignoreAttributes&&"string"==typeof t){const r=s(t,q),o=r.length,a={},h=new Array(o);let l=false;const u={};for(let t=0;t<o;t++){const e=this.resolveNameSpace(r[t][1]),s=r[t][4];if(e.length&&void 0!==s){let r=s;i.trimValues&&(r=r.trim()),r=this.replaceEntitiesValue(r,n,this.readonlyMatcher),h[t]=r,u[e]=r,l=true;}}l&&"object"==typeof e&&e.updateCurrent&&e.updateCurrent(u);const p=i.jPath?e.toString():this.readonlyMatcher;let c=false;for(let t=0;t<o;t++){const e=this.resolveNameSpace(r[t][1]);if(this.ignoreAttributesFn(e,p))continue;let n=i.attributeNamePrefix+e;if(e.length)if(i.transformAttributeName&&(n=i.transformAttributeName(n)),n=lt(n,i),void 0!==r[t][4]){const s=h[t],r=i.attributeValueProcessor(e,s,p);a[n]=null==r?s:typeof r!=typeof s||r!==s?r:ot(s,i.parseAttributeValue,i.numberParseOptions),c=true;}else i.allowBooleanAttributes&&(a[n]=true,c=true);}if(!c)return;if(i.attributesGroupName){const t={};return t[i.attributesGroupName]=a,t}return a}}const J=function(t){t=t.replace(/\r\n?/g,"\n");const e=new $("!xml");let n=e,i="";this.matcher.reset(),this.entityExpansionCount=0,this.currentExpandedLength=0,this.docTypeEntitiesKeys=[],this.lastEntitiesKeys=Object.keys(this.lastEntities),this.htmlEntitiesKeys=this.options.htmlEntities?Object.keys(this.htmlEntities):[];const s=this.options,r=new O(s.processEntities),o=t.length;for(let a=0;a<o;a++)if("<"===t[a]){const h=t.charCodeAt(a+1);if(47===h){const e=nt(t,">",a,"Closing Tag is not closed.");let r=t.substring(a+2,e).trim();if(s.removeNSPrefix){const t=r.indexOf(":");-1!==t&&(r=r.substr(t+1));}r=ht(s.transformTagName,r,"",s).tagName,n&&(i=this.saveTextToParentTag(i,n,this.readonlyMatcher));const o=this.matcher.getCurrentTag();if(r&&s.unpairedTagsSet.has(r))throw new Error(`Unpaired tag can not be used as closing tag: </${r}>`);o&&s.unpairedTagsSet.has(o)&&(this.matcher.pop(),this.tagsNodeStack.pop()),this.matcher.pop(),this.isCurrentNodeStopNode=false,n=this.tagsNodeStack.pop(),i="",a=e;}else if(63===h){let e=st(t,a,false,"?>");if(!e)throw new Error("Pi Tag is not closed.");if(i=this.saveTextToParentTag(i,n,this.readonlyMatcher),s.ignoreDeclaration&&"?xml"===e.tagName||s.ignorePiTags);else {const t=new $(e.tagName);t.add(s.textNodeName,""),e.tagName!==e.tagExp&&e.attrExpPresent&&(t[":@"]=this.buildAttributesMap(e.tagExp,this.matcher,e.tagName)),this.addChild(n,t,this.readonlyMatcher,a);}a=e.closeIndex+1;}else if(33===h&&45===t.charCodeAt(a+2)&&45===t.charCodeAt(a+3)){const e=nt(t,"--\x3e",a+4,"Comment is not closed.");if(s.commentPropName){const r=t.substring(a+4,e-2);i=this.saveTextToParentTag(i,n,this.readonlyMatcher),n.add(s.commentPropName,[{[s.textNodeName]:r}]);}a=e;}else if(33===h&&68===t.charCodeAt(a+2)){const e=r.readDocType(t,a);this.docTypeEntities=e.entities,this.docTypeEntitiesKeys=Object.keys(this.docTypeEntities)||[],a=e.i;}else if(33===h&&91===t.charCodeAt(a+2)){const e=nt(t,"]]>",a,"CDATA is not closed.")-2,r=t.substring(a+9,e);i=this.saveTextToParentTag(i,n,this.readonlyMatcher);let o=this.parseTextData(r,n.tagname,this.readonlyMatcher,true,false,true,true);null==o&&(o=""),s.cdataPropName?n.add(s.cdataPropName,[{[s.textNodeName]:r}]):n.add(s.textNodeName,o),a=e+2;}else {let r=st(t,a,s.removeNSPrefix);if(!r){const e=t.substring(Math.max(0,a-50),Math.min(o,a+50));throw new Error(`readTagExp returned undefined at position ${a}. Context: "${e}"`)}let h=r.tagName;const l=r.rawTagName;let u=r.tagExp,p=r.attrExpPresent,c=r.closeIndex;if(({tagName:h,tagExp:u}=ht(s.transformTagName,h,u,s)),s.strictReservedNames&&(h===s.commentPropName||h===s.cdataPropName||h===s.textNodeName||h===s.attributesGroupName))throw new Error(`Invalid tag name: ${h}`);n&&i&&"!xml"!==n.tagname&&(i=this.saveTextToParentTag(i,n,this.readonlyMatcher,false));const d=n;d&&s.unpairedTagsSet.has(d.tagname)&&(n=this.tagsNodeStack.pop(),this.matcher.pop());let g=false;u.length>0&&u.lastIndexOf("/")===u.length-1&&(g=true,"/"===h[h.length-1]?(h=h.substr(0,h.length-1),u=h):u=u.substr(0,u.length-1),p=h!==u);let f,m=null;f=U(l),h!==e.tagname&&this.matcher.push(h,{},f),h!==u&&p&&(m=this.buildAttributesMap(u,this.matcher,h),m&&(W(m,s))),h!==e.tagname&&(this.isCurrentNodeStopNode=this.isItStopNode());const N=a;if(this.isCurrentNodeStopNode){let e="";if(g)a=r.closeIndex;else if(s.unpairedTagsSet.has(h))a=r.closeIndex;else {const n=this.readStopNodeData(t,l,c+1);if(!n)throw new Error(`Unexpected end of ${l}`);a=n.i,e=n.tagContent;}const i=new $(h);m&&(i[":@"]=m),i.add(s.textNodeName,e),this.matcher.pop(),this.isCurrentNodeStopNode=false,this.addChild(n,i,this.readonlyMatcher,N);}else {if(g){({tagName:h,tagExp:u}=ht(s.transformTagName,h,u,s));const t=new $(h);m&&(t[":@"]=m),this.addChild(n,t,this.readonlyMatcher,N),this.matcher.pop(),this.isCurrentNodeStopNode=false;}else {if(s.unpairedTagsSet.has(h)){const t=new $(h);m&&(t[":@"]=m),this.addChild(n,t,this.readonlyMatcher,N),this.matcher.pop(),this.isCurrentNodeStopNode=false,a=r.closeIndex;continue}{const t=new $(h);if(this.tagsNodeStack.length>s.maxNestedTags)throw new Error("Maximum nested tags exceeded");this.tagsNodeStack.push(n),m&&(t[":@"]=m),this.addChild(n,t,this.readonlyMatcher,N),n=t;}}i="",a=c;}}}else i+=t[a];return e.child};function Q(t,e,n,i){this.options.captureMetaData||(i=void 0);const s=this.options.jPath?n.toString():n,r=this.options.updateTag(e.tagname,s,e[":@"]);false===r||("string"==typeof r?(e.tagname=r,t.addChild(e,i)):t.addChild(e,i));}function H(t,e,n){const i=this.options.processEntities;if(!i||!i.enabled)return t;if(i.allowedTags){const s=this.options.jPath?n.toString():n;if(!(Array.isArray(i.allowedTags)?i.allowedTags.includes(e):i.allowedTags(e,s)))return t}if(i.tagFilter){const s=this.options.jPath?n.toString():n;if(!i.tagFilter(e,s))return t}for(const e of this.docTypeEntitiesKeys){const n=this.docTypeEntities[e],s=t.match(n.regx);if(s){if(this.entityExpansionCount+=s.length,i.maxTotalExpansions&&this.entityExpansionCount>i.maxTotalExpansions)throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${i.maxTotalExpansions}`);const e=t.length;if(t=t.replace(n.regx,n.val),i.maxExpandedLength&&(this.currentExpandedLength+=t.length-e,this.currentExpandedLength>i.maxExpandedLength))throw new Error(`Total expanded content size exceeded: ${this.currentExpandedLength} > ${i.maxExpandedLength}`)}}if(-1===t.indexOf("&"))return t;for(const e of this.lastEntitiesKeys){const n=this.lastEntities[e],s=t.match(n.regex);if(s&&(this.entityExpansionCount+=s.length,i.maxTotalExpansions&&this.entityExpansionCount>i.maxTotalExpansions))throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${i.maxTotalExpansions}`);t=t.replace(n.regex,n.val);}if(-1===t.indexOf("&"))return t;for(const e of this.htmlEntitiesKeys){const n=this.htmlEntities[e],s=t.match(n.regex);if(s&&(this.entityExpansionCount+=s.length,i.maxTotalExpansions&&this.entityExpansionCount>i.maxTotalExpansions))throw new Error(`Entity expansion limit exceeded: ${this.entityExpansionCount} > ${i.maxTotalExpansions}`);t=t.replace(n.regex,n.val);}return t.replace(this.ampEntity.regex,this.ampEntity.val)}function tt(t,e,n,i){return t&&(void 0===i&&(i=0===e.child.length),void 0!==(t=this.parseTextData(t,e.tagname,n,false,!!e[":@"]&&0!==Object.keys(e[":@"]).length,i))&&""!==t&&e.add(this.options.textNodeName,t),t=""),t}function et(){return 0!==this.stopNodeExpressionsSet.size&&this.matcher.matchesAny(this.stopNodeExpressionsSet)}function nt(t,e,n,i){const s=t.indexOf(e,n);if(-1===s)throw new Error(i);return s+e.length-1}function it(t,e,n,i){const s=t.indexOf(e,n);if(-1===s)throw new Error(i);return s}function st(t,e,n,i=">"){const s=function(t,e,n=">"){let i=0;const s=[],r=t.length,o=n.charCodeAt(0),a=n.length>1?n.charCodeAt(1):-1;for(let n=e;n<r;n++){const e=t.charCodeAt(n);if(i)e===i&&(i=0);else if(34===e||39===e)i=e;else if(e===o){if(-1===a)return {data:String.fromCharCode(...s),index:n};if(t.charCodeAt(n+1)===a)return {data:String.fromCharCode(...s),index:n}}else if(9===e){s.push(32);continue}s.push(e);}}(t,e+1,i);if(!s)return;let r=s.data;const o=s.index,a=r.search(/\s/);let h=r,l=true;-1!==a&&(h=r.substring(0,a),r=r.substring(a+1).trimStart());const u=h;if(n){const t=h.indexOf(":");-1!==t&&(h=h.substr(t+1),l=h!==s.data.substr(t+1));}return {tagName:h,tagExp:r,closeIndex:o,attrExpPresent:l,rawTagName:u}}function rt(t,e,n){const i=n;let s=1;const r=t.length;for(;n<r;n++)if("<"===t[n]){const r=t.charCodeAt(n+1);if(47===r){const r=it(t,">",n,`${e} is not closed`);if(t.substring(n+2,r).trim()===e&&(s--,0===s))return {tagContent:t.substring(i,n),i:r};n=r;}else if(63===r)n=nt(t,"?>",n+1,"StopNode is not closed.");else if(33===r&&45===t.charCodeAt(n+2)&&45===t.charCodeAt(n+3))n=nt(t,"--\x3e",n+3,"StopNode is not closed.");else if(33===r&&91===t.charCodeAt(n+2))n=nt(t,"]]>",n,"StopNode is not closed.")-2;else {const i=st(t,n,">");i&&((i&&i.tagName)===e&&"/"!==i.tagExp[i.tagExp.length-1]&&s++,n=i.closeIndex);}}}function ot(t,e,n){if(e&&"string"==typeof t){const e=t.trim();return "true"===e||"false"!==e&&function(t,e={}){if(e=Object.assign({},k,e),!t||"string"!=typeof t)return t;let n=t.trim();if(0===n.length)return t;if(void 0!==e.skipLike&&e.skipLike.test(n))return t;if("0"===n)return 0;if(e.hex&&M.test(n))return function(t){if(parseInt)return parseInt(t,16);if(Number.parseInt)return Number.parseInt(t,16);if(window&&window.parseInt)return window.parseInt(t,16);throw new Error("parseInt, Number.parseInt, window.parseInt are not supported")}(n);if(isFinite(n)){if(n.includes("e")||n.includes("E"))return function(t,e,n){if(!n.eNotation)return t;const i=e.match(F);if(i){let s=i[1]||"";const r=-1===i[3].indexOf("e")?"E":"e",o=i[2],a=s?t[o.length+1]===r:t[o.length]===r;return o.length>1&&a?t:(1!==o.length||!i[3].startsWith(`.${r}`)&&i[3][0]!==r)&&o.length>0?n.leadingZeros&&!a?(e=(i[1]||"")+i[3],Number(e)):t:Number(e)}return t}(t,n,e);{const s=V.exec(n);if(s){const r=s[1]||"",o=s[2];let a=(i=s[3])&&-1!==i.indexOf(".")?("."===(i=i.replace(/0+$/,""))?i="0":"."===i[0]?i="0"+i:"."===i[i.length-1]&&(i=i.substring(0,i.length-1)),i):i;const h=r?"."===t[o.length+1]:"."===t[o.length];if(!e.leadingZeros&&(o.length>1||1===o.length&&!h))return t;{const i=Number(n),s=String(i);if(0===i)return i;if(-1!==s.search(/[eE]/))return e.eNotation?i:t;if(-1!==n.indexOf("."))return "0"===s||s===a||s===`${r}${a}`?i:t;let h=o?a:n;return o?h===s||r+h===s?i:t:h===s||h===r+s?i:t}}return t}}var i;return function(t,e,n){const i=e===1/0;switch(n.infinity.toLowerCase()){case "null":return null;case "infinity":return e;case "string":return i?"Infinity":"-Infinity";default:return t}}(t,Number(n),e)}(t,n)}return void 0!==t?t:""}function at(t,e,n){const i=Number.parseInt(t,e);return i>=0&&i<=1114111?String.fromCodePoint(i):n+t+";"}function ht(t,e,n,i){if(t){const i=t(e);n===e&&(n=i),e=i;}return {tagName:e=lt(e,i),tagExp:n}}function lt(t,e){if(a.includes(t))throw new Error(`[SECURITY] Invalid name: "${t}" is a reserved JavaScript keyword that could cause prototype pollution`);return o.includes(t)?e.onDangerousProperty(t):t}const ut=$.getMetaDataSymbol();function pt(t,e){if(!t||"object"!=typeof t)return {};if(!e)return t;const n={};for(const i in t)i.startsWith(e)?n[i.substring(e.length)]=t[i]:n[i]=t[i];return n}function ct(t,e,n,i){return dt(t,e,n,i)}function dt(t,e,n,i){let s;const r={};for(let o=0;o<t.length;o++){const a=t[o],h=gt(a);if(void 0!==h&&h!==e.textNodeName){const t=pt(a[":@"]||{},e.attributeNamePrefix);n.push(h,t);}if(h===e.textNodeName) void 0===s?s=a[h]:s+=""+a[h];else {if(void 0===h)continue;if(a[h]){let t=dt(a[h],e,n,i);const s=mt(t,e);if(a[":@"]?ft(t,a[":@"],i,e):1!==Object.keys(t).length||void 0===t[e.textNodeName]||e.alwaysCreateTextNode?0===Object.keys(t).length&&(e.alwaysCreateTextNode?t[e.textNodeName]="":t=""):t=t[e.textNodeName],void 0!==a[ut]&&"object"==typeof t&&null!==t&&(t[ut]=a[ut]),void 0!==r[h]&&Object.prototype.hasOwnProperty.call(r,h))Array.isArray(r[h])||(r[h]=[r[h]]),r[h].push(t);else {const n=e.jPath?i.toString():i;e.isArray(h,n,s)?r[h]=[t]:r[h]=t;} void 0!==h&&h!==e.textNodeName&&n.pop();}}}return "string"==typeof s?s.length>0&&(r[e.textNodeName]=s):void 0!==s&&(r[e.textNodeName]=s),r}function gt(t){const e=Object.keys(t);for(let t=0;t<e.length;t++){const n=e[t];if(":@"!==n)return n}}function ft(t,e,n,i){if(e){const s=Object.keys(e),r=s.length;for(let o=0;o<r;o++){const r=s[o],a=r.startsWith(i.attributeNamePrefix)?r.substring(i.attributeNamePrefix.length):r,h=i.jPath?n.toString()+"."+a:n;i.isArray(r,h,true,true)?t[r]=[e[r]]:t[r]=e[r];}}}function mt(t,e){const{textNodeName:n}=e,i=Object.keys(t).length;return 0===i||!(1!==i||!t[n]&&"boolean"!=typeof t[n]&&0!==t[n])}class xt{constructor(t){this.externalEntities={},this.options=P(t);}parse(t,e){if("string"!=typeof t&&t.toString)t=t.toString();else if("string"!=typeof t)throw new Error("XML data is accepted in String or Bytes[] form.");if(e){ true===e&&(e={});const n=l(t,e);if(true!==n)throw Error(`${n.err.msg}:${n.err.line}:${n.err.col}`)}const n=new Y(this.options);n.addExternalEntities(this.externalEntities);const i=n.parseXml(t);return this.options.preserveOrder||void 0===i?i:ct(i,this.options,n.matcher,n.readonlyMatcher)}addEntity(t,e){if(-1!==e.indexOf("&"))throw new Error("Entity value can't have '&'");if(-1!==t.indexOf("&")||-1!==t.indexOf(";"))throw new Error("An entity must be set without '&' and ';'. Eg. use '#xD' for '&#xD;'");if("&"===e)throw new Error("An entity with value '&' is not permitted");this.externalEntities[t]=e;}static getMetaDataSymbol(){return $.getMetaDataSymbol()}}function Nt(t,e){let n="";e.format&&e.indentBy.length>0&&(n="\n");const i=[];if(e.stopNodes&&Array.isArray(e.stopNodes))for(let t=0;t<e.stopNodes.length;t++){const n=e.stopNodes[t];"string"==typeof n?i.push(new R(n)):n instanceof R&&i.push(n);}return bt(t,e,n,new G,i)}function bt(t,e,n,i,s){let r="",o=false;if(e.maxNestedTags&&i.getDepth()>e.maxNestedTags)throw new Error("Maximum nested tags exceeded");if(!Array.isArray(t)){if(null!=t){let n=t.toString();return n=At(n,e),n}return ""}for(let a=0;a<t.length;a++){const h=t[a],l=vt(h);if(void 0===l)continue;const u=Et(h[":@"],e);i.push(l,u);const p=Tt(i,s);if(l===e.textNodeName){let t=h[l];p||(t=e.tagValueProcessor(l,t),t=At(t,e)),o&&(r+=n),r+=t,o=false,i.pop();continue}if(l===e.cdataPropName){o&&(r+=n),r+=`<![CDATA[${h[l][0][e.textNodeName]}]]>`,o=false,i.pop();continue}if(l===e.commentPropName){r+=n+`\x3c!--${h[l][0][e.textNodeName]}--\x3e`,o=true,i.pop();continue}if("?"===l[0]){const t=St(h[":@"],e,p),s="?xml"===l?"":n;let a=h[l][0][e.textNodeName];a=0!==a.length?" "+a:"",r+=s+`<${l}${a}${t}?>`,o=true,i.pop();continue}let c=n;""!==c&&(c+=e.indentBy);const d=n+`<${l}${St(h[":@"],e,p)}`;let g;g=p?yt(h[l],e):bt(h[l],e,c,i,s),-1!==e.unpairedTags.indexOf(l)?e.suppressUnpairedNode?r+=d+">":r+=d+"/>":g&&0!==g.length||!e.suppressEmptyNode?g&&g.endsWith(">")?r+=d+`>${g}${n}</${l}>`:(r+=d+">",g&&""!==n&&(g.includes("/>")||g.includes("</"))?r+=n+e.indentBy+g+n:r+=g,r+=`</${l}>`):r+=d+"/>",o=true,i.pop();}return r}function Et(t,e){if(!t||e.ignoreAttributes)return null;const n={};let i=false;for(let s in t)Object.prototype.hasOwnProperty.call(t,s)&&(n[s.startsWith(e.attributeNamePrefix)?s.substr(e.attributeNamePrefix.length):s]=t[s],i=true);return i?n:null}function yt(t,e){if(!Array.isArray(t))return null!=t?t.toString():"";let n="";for(let i=0;i<t.length;i++){const s=t[i],r=vt(s);if(r===e.textNodeName)n+=s[r];else if(r===e.cdataPropName)n+=s[r][0][e.textNodeName];else if(r===e.commentPropName)n+=s[r][0][e.textNodeName];else {if(r&&"?"===r[0])continue;if(r){const t=wt(s[":@"],e),i=yt(s[r],e);i&&0!==i.length?n+=`<${r}${t}>${i}</${r}>`:n+=`<${r}${t}/>`;}}}return n}function wt(t,e){let n="";if(t&&!e.ignoreAttributes)for(let i in t){if(!Object.prototype.hasOwnProperty.call(t,i))continue;let s=t[i];true===s&&e.suppressBooleanAttributes?n+=` ${i.substr(e.attributeNamePrefix.length)}`:n+=` ${i.substr(e.attributeNamePrefix.length)}="${s}"`;}return n}function vt(t){const e=Object.keys(t);for(let n=0;n<e.length;n++){const i=e[n];if(Object.prototype.hasOwnProperty.call(t,i)&&":@"!==i)return i}}function St(t,e,n){let i="";if(t&&!e.ignoreAttributes)for(let s in t){if(!Object.prototype.hasOwnProperty.call(t,s))continue;let r;n?r=t[s]:(r=e.attributeValueProcessor(s,t[s]),r=At(r,e)),true===r&&e.suppressBooleanAttributes?i+=` ${s.substr(e.attributeNamePrefix.length)}`:i+=` ${s.substr(e.attributeNamePrefix.length)}="${r}"`;}return i}function Tt(t,e){if(!e||0===e.length)return  false;for(let n=0;n<e.length;n++)if(t.matches(e[n]))return  true;return  false}function At(t,e){if(t&&t.length>0&&e.processEntities)for(let n=0;n<e.entities.length;n++){const i=e.entities[n];t=t.replace(i.regex,i.val);}return t}const Ct={attributeNamePrefix:"@_",attributesGroupName:false,textNodeName:"#text",ignoreAttributes:true,cdataPropName:false,format:false,indentBy:"  ",suppressEmptyNode:false,suppressUnpairedNode:true,suppressBooleanAttributes:true,tagValueProcessor:function(t,e){return e},attributeValueProcessor:function(t,e){return e},preserveOrder:false,commentPropName:false,unpairedTags:[],entities:[{regex:new RegExp("&","g"),val:"&amp;"},{regex:new RegExp(">","g"),val:"&gt;"},{regex:new RegExp("<","g"),val:"&lt;"},{regex:new RegExp("'","g"),val:"&apos;"},{regex:new RegExp('"',"g"),val:"&quot;"}],processEntities:true,stopNodes:[],oneListGroup:false,maxNestedTags:100,jPath:true};function Pt(t){if(this.options=Object.assign({},Ct,t),this.options.stopNodes&&Array.isArray(this.options.stopNodes)&&(this.options.stopNodes=this.options.stopNodes.map(t=>"string"==typeof t&&t.startsWith("*.")?".."+t.substring(2):t)),this.stopNodeExpressions=[],this.options.stopNodes&&Array.isArray(this.options.stopNodes))for(let t=0;t<this.options.stopNodes.length;t++){const e=this.options.stopNodes[t];"string"==typeof e?this.stopNodeExpressions.push(new R(e)):e instanceof R&&this.stopNodeExpressions.push(e);}var e;true===this.options.ignoreAttributes||this.options.attributesGroupName?this.isAttribute=function(){return  false}:(this.ignoreAttributesFn="function"==typeof(e=this.options.ignoreAttributes)?e:Array.isArray(e)?t=>{for(const n of e){if("string"==typeof n&&t===n)return  true;if(n instanceof RegExp&&n.test(t))return  true}}:()=>false,this.attrPrefixLen=this.options.attributeNamePrefix.length,this.isAttribute=Ot),this.processTextOrObjNode=_t,this.options.format?(this.indentate=$t,this.tagEndChar=">\n",this.newLine="\n"):(this.indentate=function(){return ""},this.tagEndChar=">",this.newLine="");}function _t(t,e,n,i){const s=this.extractAttributes(t);if(i.push(e,s),this.checkStopNode(i)){const s=this.buildRawContent(t),r=this.buildAttributesForStopNode(t);return i.pop(),this.buildObjectNode(s,e,r,n)}const r=this.j2x(t,n+1,i);return i.pop(),void 0!==t[this.options.textNodeName]&&1===Object.keys(t).length?this.buildTextValNode(t[this.options.textNodeName],e,r.attrStr,n,i):this.buildObjectNode(r.val,e,r.attrStr,n)}function $t(t){return this.options.indentBy.repeat(t)}function Ot(t){return !(!t.startsWith(this.options.attributeNamePrefix)||t===this.options.textNodeName)&&t.substr(this.attrPrefixLen)}Pt.prototype.build=function(t){if(this.options.preserveOrder)return Nt(t,this.options);{Array.isArray(t)&&this.options.arrayNodeName&&this.options.arrayNodeName.length>1&&(t={[this.options.arrayNodeName]:t});const e=new G;return this.j2x(t,0,e).val}},Pt.prototype.j2x=function(t,e,n){let i="",s="";if(this.options.maxNestedTags&&n.getDepth()>=this.options.maxNestedTags)throw new Error("Maximum nested tags exceeded");const r=this.options.jPath?n.toString():n,o=this.checkStopNode(n);for(let a in t)if(Object.prototype.hasOwnProperty.call(t,a))if(void 0===t[a])this.isAttribute(a)&&(s+="");else if(null===t[a])this.isAttribute(a)||a===this.options.cdataPropName?s+="":"?"===a[0]?s+=this.indentate(e)+"<"+a+"?"+this.tagEndChar:s+=this.indentate(e)+"<"+a+"/"+this.tagEndChar;else if(t[a]instanceof Date)s+=this.buildTextValNode(t[a],a,"",e,n);else if("object"!=typeof t[a]){const h=this.isAttribute(a);if(h&&!this.ignoreAttributesFn(h,r))i+=this.buildAttrPairStr(h,""+t[a],o);else if(!h)if(a===this.options.textNodeName){let e=this.options.tagValueProcessor(a,""+t[a]);s+=this.replaceEntitiesValue(e);}else {n.push(a);const i=this.checkStopNode(n);if(n.pop(),i){const n=""+t[a];s+=""===n?this.indentate(e)+"<"+a+this.closeTag(a)+this.tagEndChar:this.indentate(e)+"<"+a+">"+n+"</"+a+this.tagEndChar;}else s+=this.buildTextValNode(t[a],a,"",e,n);}}else if(Array.isArray(t[a])){const i=t[a].length;let r="",o="";for(let h=0;h<i;h++){const i=t[a][h];if(void 0===i);else if(null===i)"?"===a[0]?s+=this.indentate(e)+"<"+a+"?"+this.tagEndChar:s+=this.indentate(e)+"<"+a+"/"+this.tagEndChar;else if("object"==typeof i)if(this.options.oneListGroup){n.push(a);const t=this.j2x(i,e+1,n);n.pop(),r+=t.val,this.options.attributesGroupName&&i.hasOwnProperty(this.options.attributesGroupName)&&(o+=t.attrStr);}else r+=this.processTextOrObjNode(i,a,e,n);else if(this.options.oneListGroup){let t=this.options.tagValueProcessor(a,i);t=this.replaceEntitiesValue(t),r+=t;}else {n.push(a);const t=this.checkStopNode(n);if(n.pop(),t){const t=""+i;r+=""===t?this.indentate(e)+"<"+a+this.closeTag(a)+this.tagEndChar:this.indentate(e)+"<"+a+">"+t+"</"+a+this.tagEndChar;}else r+=this.buildTextValNode(i,a,"",e,n);}}this.options.oneListGroup&&(r=this.buildObjectNode(r,a,o,e)),s+=r;}else if(this.options.attributesGroupName&&a===this.options.attributesGroupName){const e=Object.keys(t[a]),n=e.length;for(let s=0;s<n;s++)i+=this.buildAttrPairStr(e[s],""+t[a][e[s]],o);}else s+=this.processTextOrObjNode(t[a],a,e,n);return {attrStr:i,val:s}},Pt.prototype.buildAttrPairStr=function(t,e,n){return n||(e=this.options.attributeValueProcessor(t,""+e),e=this.replaceEntitiesValue(e)),this.options.suppressBooleanAttributes&&"true"===e?" "+t:" "+t+'="'+e+'"'},Pt.prototype.extractAttributes=function(t){if(!t||"object"!=typeof t)return null;const e={};let n=false;if(this.options.attributesGroupName&&t[this.options.attributesGroupName]){const i=t[this.options.attributesGroupName];for(let t in i)Object.prototype.hasOwnProperty.call(i,t)&&(e[t.startsWith(this.options.attributeNamePrefix)?t.substring(this.options.attributeNamePrefix.length):t]=i[t],n=true);}else for(let i in t){if(!Object.prototype.hasOwnProperty.call(t,i))continue;const s=this.isAttribute(i);s&&(e[s]=t[i],n=true);}return n?e:null},Pt.prototype.buildRawContent=function(t){if("string"==typeof t)return t;if("object"!=typeof t||null===t)return String(t);if(void 0!==t[this.options.textNodeName])return t[this.options.textNodeName];let e="";for(let n in t){if(!Object.prototype.hasOwnProperty.call(t,n))continue;if(this.isAttribute(n))continue;if(this.options.attributesGroupName&&n===this.options.attributesGroupName)continue;const i=t[n];if(n===this.options.textNodeName)e+=i;else if(Array.isArray(i)){for(let t of i)if("string"==typeof t||"number"==typeof t)e+=`<${n}>${t}</${n}>`;else if("object"==typeof t&&null!==t){const i=this.buildRawContent(t),s=this.buildAttributesForStopNode(t);e+=""===i?`<${n}${s}/>`:`<${n}${s}>${i}</${n}>`;}}else if("object"==typeof i&&null!==i){const t=this.buildRawContent(i),s=this.buildAttributesForStopNode(i);e+=""===t?`<${n}${s}/>`:`<${n}${s}>${t}</${n}>`;}else e+=`<${n}>${i}</${n}>`;}return e},Pt.prototype.buildAttributesForStopNode=function(t){if(!t||"object"!=typeof t)return "";let e="";if(this.options.attributesGroupName&&t[this.options.attributesGroupName]){const n=t[this.options.attributesGroupName];for(let t in n){if(!Object.prototype.hasOwnProperty.call(n,t))continue;const i=t.startsWith(this.options.attributeNamePrefix)?t.substring(this.options.attributeNamePrefix.length):t,s=n[t];true===s&&this.options.suppressBooleanAttributes?e+=" "+i:e+=" "+i+'="'+s+'"';}}else for(let n in t){if(!Object.prototype.hasOwnProperty.call(t,n))continue;const i=this.isAttribute(n);if(i){const s=t[n];true===s&&this.options.suppressBooleanAttributes?e+=" "+i:e+=" "+i+'="'+s+'"';}}return e},Pt.prototype.buildObjectNode=function(t,e,n,i){if(""===t)return "?"===e[0]?this.indentate(i)+"<"+e+n+"?"+this.tagEndChar:this.indentate(i)+"<"+e+n+this.closeTag(e)+this.tagEndChar;{let s="</"+e+this.tagEndChar,r="";return "?"===e[0]&&(r="?",s=""),!n&&""!==n||-1!==t.indexOf("<")?false!==this.options.commentPropName&&e===this.options.commentPropName&&0===r.length?this.indentate(i)+`\x3c!--${t}--\x3e`+this.newLine:this.indentate(i)+"<"+e+n+r+this.tagEndChar+t+this.indentate(i)+s:this.indentate(i)+"<"+e+n+r+">"+t+s}},Pt.prototype.closeTag=function(t){let e="";return  -1!==this.options.unpairedTags.indexOf(t)?this.options.suppressUnpairedNode||(e="/"):e=this.options.suppressEmptyNode?"/":`></${t}`,e},Pt.prototype.checkStopNode=function(t){if(!this.stopNodeExpressions||0===this.stopNodeExpressions.length)return  false;for(let e=0;e<this.stopNodeExpressions.length;e++)if(t.matches(this.stopNodeExpressions[e]))return  true;return  false},Pt.prototype.buildTextValNode=function(t,e,n,i,s){if(false!==this.options.cdataPropName&&e===this.options.cdataPropName)return this.indentate(i)+`<![CDATA[${t}]]>`+this.newLine;if(false!==this.options.commentPropName&&e===this.options.commentPropName)return this.indentate(i)+`\x3c!--${t}--\x3e`+this.newLine;if("?"===e[0])return this.indentate(i)+"<"+e+n+"?"+this.tagEndChar;{let s=this.options.tagValueProcessor(e,t);return s=this.replaceEntitiesValue(s),""===s?this.indentate(i)+"<"+e+n+this.closeTag(e)+this.tagEndChar:this.indentate(i)+"<"+e+n+">"+s+"</"+e+this.tagEndChar}},Pt.prototype.replaceEntitiesValue=function(t){if(t&&t.length>0&&this.options.processEntities)for(let e=0;e<this.options.entities.length;e++){const n=this.options.entities[e];t=t.replace(n.regex,n.val);}return t};const It=Pt,jt={validate:l};fxp.exports=e;})();
 	return fxp.exports;
 }
 
