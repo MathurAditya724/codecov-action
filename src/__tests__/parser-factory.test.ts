@@ -265,5 +265,53 @@ github.com/user/project/file.go:1.1,3.2 1 1
       expect(aggregated.lineRate).toBe(0);
       expect(aggregated.files).toHaveLength(0);
     });
+
+    it("should merge same file across reports with union of line hits", async () => {
+      // Multiple reports covering the same file. Lines 1,2 hit by report
+      // A, lines 2,3 hit by report B. Union should report 3/4 covered,
+      // not 3/8.
+      const reportA = `<?xml version="1.0"?>
+<coverage line-rate="0.5">
+  <packages><package name="p"><classes>
+    <class filename="src/shared.cs">
+      <lines>
+        <line number="1" hits="5"/>
+        <line number="2" hits="2"/>
+        <line number="3" hits="0"/>
+        <line number="4" hits="0"/>
+      </lines>
+    </class>
+  </classes></package></packages>
+</coverage>`;
+      const reportB = `<?xml version="1.0"?>
+<coverage line-rate="0.5">
+  <packages><package name="p"><classes>
+    <class filename="src/shared.cs">
+      <lines>
+        <line number="1" hits="0"/>
+        <line number="2" hits="3"/>
+        <line number="3" hits="1"/>
+        <line number="4" hits="0"/>
+      </lines>
+    </class>
+  </classes></package></packages>
+</coverage>`;
+
+      const a = await CoverageParserFactory.parseContent(reportA);
+      const b = await CoverageParserFactory.parseContent(reportB);
+      const aggregated = CoverageParserFactory.aggregateResults([a, b]);
+
+      expect(aggregated.files).toHaveLength(1);
+      expect(aggregated.totalStatements).toBe(4);
+      expect(aggregated.coveredStatements).toBe(3);
+      expect(aggregated.lineRate).toBe(75);
+
+      const merged = aggregated.files[0];
+      expect(merged.lines.find((l) => l.lineNumber === 1)?.count).toBe(5);
+      expect(merged.lines.find((l) => l.lineNumber === 2)?.count).toBe(3);
+      expect(merged.lines.find((l) => l.lineNumber === 3)?.count).toBe(1);
+      expect(merged.lines.find((l) => l.lineNumber === 4)?.count).toBe(0);
+      expect(merged.missingLines).toEqual([4]);
+    });
   });
 });

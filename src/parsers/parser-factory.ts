@@ -3,6 +3,7 @@ import type {
   AggregatedCoverageResults,
   CoverageResults,
   FileCoverage,
+  LineCoverage,
 } from "../types/coverage.js";
 import type { CoverageFormat, ICoverageParser } from "./base-parser.js";
 import { CloverParser } from "./clover-parser.js";
@@ -167,9 +168,16 @@ export const CoverageParserFactory = {
   },
 
   /**
-   * Aggregate multiple coverage results into a single result
+   * Aggregate multiple coverage results into a single result.
+   *
+   * Multiple reports covering the same file are merged by path with union
+   * semantics: per-line hit counts are combined via max(), so a line hit
+   * by any report counts as covered. Without this, overlapping files
+   * would be double-counted in the denominator, deflating the rate.
    */
   aggregateResults(results: CoverageResults[]): AggregatedCoverageResults {
+    const mergedFiles = mergeFilesByPath(results.flatMap((r) => r.files));
+
     let totalStatements = 0;
     let coveredStatements = 0;
     let totalConditionals = 0;
@@ -184,38 +192,28 @@ export const CoverageParserFactory = {
     let totalBranches = 0;
     let totalLines = 0;
 
-    const allFiles: FileCoverage[] = [];
+    for (const file of mergedFiles) {
+      totalStatements += file.statements;
+      coveredStatements += file.coveredStatements;
+      totalConditionals += file.conditionals;
+      coveredConditionals += file.coveredConditionals;
+      totalMethods += file.methods;
+      coveredMethods += file.coveredMethods;
 
-    for (const result of results) {
-      totalStatements += result.metrics.statements;
-      coveredStatements += result.metrics.coveredStatements;
-      totalConditionals += result.metrics.conditionals;
-      coveredConditionals += result.metrics.coveredConditionals;
-      totalMethods += result.metrics.methods;
-      coveredMethods += result.metrics.coveredMethods;
-
-      // Aggregate file-level detailed metrics
-      for (const file of result.files) {
-        allFiles.push(file);
-
-        // Count hits and misses from line data
-        for (const line of file.lines) {
-          totalLines++;
-          if (line.count > 0) {
-            totalHits++;
-          } else {
-            totalMisses++;
-          }
+      for (const line of file.lines) {
+        totalLines++;
+        if (line.count > 0) {
+          totalHits++;
+        } else {
+          totalMisses++;
         }
-
-        // Count partials from file's partialLines
-        if (file.partialLines) {
-          totalPartials += file.partialLines.length;
-        }
-
-        // Count branches
-        totalBranches += file.conditionals;
       }
+
+      if (file.partialLines) {
+        totalPartials += file.partialLines.length;
+      }
+
+      totalBranches += file.conditionals;
     }
 
     const lineRate =
@@ -240,17 +238,129 @@ export const CoverageParserFactory = {
       coveredMethods,
       lineRate,
       branchRate,
-      files: allFiles,
+      files: mergedFiles,
       // Detailed metrics
       totalHits,
       totalMisses,
       totalPartials,
       totalBranches,
-      totalFiles: allFiles.length,
+      totalFiles: mergedFiles.length,
       totalLines,
     };
   },
 };
+
+/**
+ * Merge FileCoverage entries that share a path, unioning their line hits.
+ * Files with unique paths are returned unchanged.
+ */
+function mergeFilesByPath(files: FileCoverage[]): FileCoverage[] {
+  const byPath = new Map<string, FileCoverage[]>();
+  for (const file of files) {
+    const key = file.path || file.name;
+    const group = byPath.get(key);
+    if (group) {
+      group.push(file);
+    } else {
+      byPath.set(key, [file]);
+    }
+  }
+
+  const result: FileCoverage[] = [];
+  for (const group of byPath.values()) {
+    result.push(group.length === 1 ? group[0] : mergeFileGroup(group));
+  }
+  return result;
+}
+
+function mergeFileGroup(group: FileCoverage[]): FileCoverage {
+  const lineMap = new Map<number, LineCoverage>();
+  for (const file of group) {
+    for (const line of file.lines) {
+      const existing = lineMap.get(line.lineNumber);
+      if (!existing) {
+        lineMap.set(line.lineNumber, { ...line });
+        continue;
+      }
+      if (line.count > existing.count) {
+        existing.count = line.count;
+      }
+      if (line.type === "cond" || existing.type === "cond") {
+        existing.type = "cond";
+      } else if (line.type === "method" || existing.type === "method") {
+        existing.type = "method";
+      }
+      if (line.trueCount !== undefined) {
+        existing.trueCount = Math.max(existing.trueCount ?? 0, line.trueCount);
+      }
+      if (line.falseCount !== undefined) {
+        existing.falseCount = Math.max(
+          existing.falseCount ?? 0,
+          line.falseCount
+        );
+      }
+    }
+  }
+
+  const mergedLines = [...lineMap.values()].sort(
+    (a, b) => a.lineNumber - b.lineNumber
+  );
+  const statements = mergedLines.length;
+  const coveredStatements = mergedLines.filter((l) => l.count > 0).length;
+  const missingLines = mergedLines
+    .filter((l) => l.count === 0)
+    .map((l) => l.lineNumber);
+
+  // LineCoverage doesn't carry per-branch hit state, so we can't reliably
+  // union branch hits across reports. Same file ⇒ same branch count across
+  // reports, so take the max as a best-effort union.
+  const conditionals = Math.max(...group.map((f) => f.conditionals));
+  const coveredConditionals = Math.max(
+    ...group.map((f) => f.coveredConditionals),
+  );
+  const methods = Math.max(...group.map((f) => f.methods));
+  const coveredMethods = Math.max(...group.map((f) => f.coveredMethods));
+
+  // A partial line remains partial only if it still has hits after merge;
+  // lines that ended up fully missed are no longer partial.
+  const partialSet = new Set<number>();
+  for (const file of group) {
+    for (const ln of file.partialLines ?? []) partialSet.add(ln);
+  }
+  const partialLines = [...partialSet]
+    .filter((ln) => {
+      const l = lineMap.get(ln);
+      return l !== undefined && l.count > 0;
+    })
+    .sort((a, b) => a - b);
+
+  const lineRate =
+    statements > 0
+      ? Number.parseFloat(((coveredStatements / statements) * 100).toFixed(2))
+      : 0;
+  const branchRate =
+    conditionals > 0
+      ? Number.parseFloat(
+          ((coveredConditionals / conditionals) * 100).toFixed(2),
+        )
+      : 0;
+
+  return {
+    name: group[0].name,
+    path: group[0].path,
+    statements,
+    coveredStatements,
+    conditionals,
+    coveredConditionals,
+    methods,
+    coveredMethods,
+    lineRate,
+    branchRate,
+    lines: mergedLines,
+    missingLines,
+    partialLines,
+  };
+}
 
 /**
  * Re-export for convenience
