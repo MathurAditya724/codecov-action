@@ -314,6 +314,40 @@ github.com/user/project/file.go:1.1,3.2 1 1
       expect(merged.missingLines).toEqual([4]);
     });
 
+    it("should sum disjoint classes sharing a path within one report", async () => {
+      // Cobertura emits one <class> per type; a single source file with
+      // multiple types (inner classes, partial classes) produces several
+      // FileCoverage entries sharing a path. These are disjoint parts
+      // of the file and must be summed, not unioned (which would both
+      // undercount the denominator and let coveredStatements exceed it).
+      const report = `<?xml version="1.0"?>
+<coverage line-rate="0.5">
+  <packages><package name="p"><classes>
+    <class filename="src/multi.py">
+      <lines>
+        <line number="1" hits="1"/>
+        <line number="2" hits="1"/>
+        <line number="3" hits="0"/>
+      </lines>
+    </class>
+    <class filename="src/multi.py">
+      <lines>
+        <line number="10" hits="1"/>
+        <line number="11" hits="0"/>
+      </lines>
+    </class>
+  </classes></package></packages>
+</coverage>`;
+
+      const result = await CoverageParserFactory.parseContent(report);
+      const aggregated = CoverageParserFactory.aggregateResults([result]);
+
+      expect(aggregated.files).toHaveLength(1);
+      expect(aggregated.totalStatements).toBe(5);
+      expect(aggregated.coveredStatements).toBe(3);
+      expect(aggregated.lineRate).toBe(60);
+    });
+
     it("should preserve block-level statement counts when merging Go reports", async () => {
       // Go reports statement count as semantic blocks, not physical lines:
       // `file.go:1.1,3.2 2 1` is one block covering lines 1-3 with 2

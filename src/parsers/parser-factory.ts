@@ -176,7 +176,7 @@ export const CoverageParserFactory = {
    * would be double-counted in the denominator, deflating the rate.
    */
   aggregateResults(results: CoverageResults[]): AggregatedCoverageResults {
-    const mergedFiles = mergeFilesByPath(results.flatMap((r) => r.files));
+    const mergedFiles = mergeFilesByPath(results);
 
     let totalStatements = 0;
     let coveredStatements = 0;
@@ -251,10 +251,27 @@ export const CoverageParserFactory = {
 };
 
 /**
- * Merge FileCoverage entries that share a path, unioning their line hits.
- * Files with unique paths are returned unchanged.
+ * Merge FileCoverage entries that share a path in two phases:
+ *
+ *   1. Within each report, sum entries sharing a path. Some parsers emit
+ *      multiple FileCoverage entries per source file (e.g., cobertura
+ *      produces one `<class>` per Java/C# type, and a single source file
+ *      can contain multiple types or inner classes). These are disjoint
+ *      parts of one file and must be summed, not unioned.
+ *   2. Across reports, union entries sharing a path — a line hit by any
+ *      report counts as covered.
  */
-function mergeFilesByPath(files: FileCoverage[]): FileCoverage[] {
+function mergeFilesByPath(results: CoverageResults[]): FileCoverage[] {
+  const perReportCombined = results.flatMap((r) =>
+    groupByPath(r.files, sumFileGroup),
+  );
+  return groupByPath(perReportCombined, mergeFileGroup);
+}
+
+function groupByPath(
+  files: FileCoverage[],
+  combine: (group: FileCoverage[]) => FileCoverage,
+): FileCoverage[] {
   const byPath = new Map<string, FileCoverage[]>();
   for (const file of files) {
     const key = file.path || file.name;
@@ -268,9 +285,74 @@ function mergeFilesByPath(files: FileCoverage[]): FileCoverage[] {
 
   const result: FileCoverage[] = [];
   for (const group of byPath.values()) {
-    result.push(group.length === 1 ? group[0] : mergeFileGroup(group));
+    result.push(group.length === 1 ? group[0] : combine(group));
   }
   return result;
+}
+
+/**
+ * Sum disjoint FileCoverage entries (e.g., inner classes within the same
+ * source file). Counts are additive; line data is concatenated.
+ */
+function sumFileGroup(group: FileCoverage[]): FileCoverage {
+  const lineMap = new Map<number, LineCoverage>();
+  for (const file of group) {
+    for (const line of file.lines) {
+      // Distinct classes in the same file normally occupy non-overlapping
+      // line ranges, but if they do overlap, take the max hit count.
+      const existing = lineMap.get(line.lineNumber);
+      if (!existing || line.count > existing.count) {
+        lineMap.set(line.lineNumber, { ...line });
+      }
+    }
+  }
+
+  const mergedLines = [...lineMap.values()].sort(
+    (a, b) => a.lineNumber - b.lineNumber,
+  );
+  const statements = group.reduce((s, f) => s + f.statements, 0);
+  const coveredStatements = group.reduce((s, f) => s + f.coveredStatements, 0);
+  const conditionals = group.reduce((s, f) => s + f.conditionals, 0);
+  const coveredConditionals = group.reduce(
+    (s, f) => s + f.coveredConditionals,
+    0,
+  );
+  const methods = group.reduce((s, f) => s + f.methods, 0);
+  const coveredMethods = group.reduce((s, f) => s + f.coveredMethods, 0);
+
+  const partialLines = [
+    ...new Set(group.flatMap((f) => f.partialLines ?? [])),
+  ].sort((a, b) => a - b);
+  const missingLines = mergedLines
+    .filter((l) => l.count === 0)
+    .map((l) => l.lineNumber);
+
+  const lineRate =
+    statements > 0
+      ? Number.parseFloat(((coveredStatements / statements) * 100).toFixed(2))
+      : 0;
+  const branchRate =
+    conditionals > 0
+      ? Number.parseFloat(
+          ((coveredConditionals / conditionals) * 100).toFixed(2),
+        )
+      : 0;
+
+  return {
+    name: group[0].name,
+    path: group[0].path,
+    statements,
+    coveredStatements,
+    conditionals,
+    coveredConditionals,
+    methods,
+    coveredMethods,
+    lineRate,
+    branchRate,
+    lines: mergedLines,
+    missingLines,
+    partialLines,
+  };
 }
 
 function mergeFileGroup(group: FileCoverage[]): FileCoverage {
