@@ -348,10 +348,12 @@ github.com/user/project/file.go:1.1,3.2 1 1
       expect(aggregated.lineRate).toBe(60);
     });
 
-    it("should preserve block-level statement counts when merging Go reports", async () => {
+    it("should union coveredStatements when Go reports exercise disjoint blocks", async () => {
       // Go reports statement count as semantic blocks, not physical lines:
       // `file.go:1.1,3.2 2 1` is one block covering lines 1-3 with 2
-      // statements. Merging must not collapse statements to lines.length.
+      // statements. Merging must not collapse statements to lines.length,
+      // and when reports cover disjoint blocks (report A hits block 1 only,
+      // report B hits block 2 only), the union should credit both.
       const reportA = `mode: set
 github.com/x/p/f.go:1.1,3.2 2 1
 github.com/x/p/f.go:5.1,7.2 2 0
@@ -368,6 +370,10 @@ github.com/x/p/f.go:5.1,7.2 2 1
       expect(aggregated.files).toHaveLength(1);
       // 2 blocks × 2 statements = 4 statements total, not 6 physical lines.
       expect(aggregated.totalStatements).toBe(4);
+      // Union of disjoint coverage: A covers 2 stmts, B covers 2 stmts,
+      // overlap is 0 → 4 covered, not max(2,2)=2.
+      expect(aggregated.coveredStatements).toBe(4);
+      expect(aggregated.lineRate).toBe(100);
     });
   });
 });

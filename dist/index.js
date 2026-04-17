@@ -45716,16 +45716,23 @@ function mergeFileGroup(group) {
     }
     // Parsers differ on how statements map to lines: cobertura/lcov/jacoco/
     // istanbul emit one "statement" per line entry, but Go counts semantic
-    // blocks where one block can span many lines. To stay correct for both,
-    // use max() across reports (same file ⇒ same statement count). When
-    // statements align 1:1 with lines we can derive coveredStatements from
-    // the merged line union exactly; otherwise fall back to max() across
-    // reports (a safe underestimate of the true union).
+    // blocks where one block can span many lines. To stay correct for both:
+    //
+    //   - `statements` uses max() across reports (same file ⇒ same count).
+    //   - When statements align 1:1 with lines, derive `coveredStatements`
+    //     from the merged line union exactly.
+    //   - Otherwise, approximate the union by summing per-report covered
+    //     counts and clamping to `statements`. This is more accurate than
+    //     max() when reports exercise different blocks (the common case
+    //     for Go, where different suites cover different paths), at the
+    //     cost of overestimating when reports cover overlapping blocks.
+    //     Exact reconstruction would require preserving block structure
+    //     through FileCoverage.
     const statements = Math.max(...group.map((f) => f.statements));
     const lineAligned = group.every((f) => f.statements === f.lines.length);
     const coveredStatements = lineAligned
         ? [...lineMap.values()].filter((l) => l.count > 0).length
-        : Math.max(...group.map((f) => f.coveredStatements));
+        : Math.min(statements, group.reduce((s, f) => s + f.coveredStatements, 0));
     // LineCoverage doesn't carry per-branch hit state, so we can't reliably
     // union branch hits across reports. Same file ⇒ same branch count across
     // reports, so take the max as a best-effort union.
