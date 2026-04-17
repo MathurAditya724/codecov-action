@@ -313,5 +313,27 @@ github.com/user/project/file.go:1.1,3.2 1 1
       expect(merged.lines.find((l) => l.lineNumber === 4)?.count).toBe(0);
       expect(merged.missingLines).toEqual([4]);
     });
+
+    it("should preserve block-level statement counts when merging Go reports", async () => {
+      // Go reports statement count as semantic blocks, not physical lines:
+      // `file.go:1.1,3.2 2 1` is one block covering lines 1-3 with 2
+      // statements. Merging must not collapse statements to lines.length.
+      const reportA = `mode: set
+github.com/x/p/f.go:1.1,3.2 2 1
+github.com/x/p/f.go:5.1,7.2 2 0
+`;
+      const reportB = `mode: set
+github.com/x/p/f.go:1.1,3.2 2 0
+github.com/x/p/f.go:5.1,7.2 2 1
+`;
+
+      const a = await CoverageParserFactory.parseContent(reportA);
+      const b = await CoverageParserFactory.parseContent(reportB);
+      const aggregated = CoverageParserFactory.aggregateResults([a, b]);
+
+      expect(aggregated.files).toHaveLength(1);
+      // 2 blocks × 2 statements = 4 statements total, not 6 physical lines.
+      expect(aggregated.totalStatements).toBe(4);
+    });
   });
 });

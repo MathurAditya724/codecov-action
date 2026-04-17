@@ -305,8 +305,19 @@ function mergeFileGroup(group: FileCoverage[]): FileCoverage {
   const mergedLines = [...lineMap.values()].sort(
     (a, b) => a.lineNumber - b.lineNumber
   );
-  const statements = mergedLines.length;
-  const coveredStatements = mergedLines.filter((l) => l.count > 0).length;
+
+  // Parsers differ on how statements map to lines: cobertura/lcov/jacoco/
+  // istanbul emit one "statement" per line entry, but Go counts semantic
+  // blocks where one block can span many lines. To stay correct for both,
+  // use max() across reports (same file ⇒ same statement count). When
+  // statements align 1:1 with lines we can derive coveredStatements from
+  // the merged line union exactly; otherwise fall back to max() across
+  // reports (a safe underestimate of the true union).
+  const statements = Math.max(...group.map((f) => f.statements));
+  const lineAligned = group.every((f) => f.statements === f.lines.length);
+  const coveredStatements = lineAligned
+    ? mergedLines.filter((l) => l.count > 0).length
+    : Math.max(...group.map((f) => f.coveredStatements));
   const missingLines = mergedLines
     .filter((l) => l.count === 0)
     .map((l) => l.lineNumber);
