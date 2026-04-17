@@ -45665,40 +45665,28 @@ function sumFileGroup(group) {
             }
         }
     }
-    const mergedLines = [...lineMap.values()].sort((a, b) => a.lineNumber - b.lineNumber);
-    const statements = group.reduce((s, f) => s + f.statements, 0);
-    const coveredStatements = group.reduce((s, f) => s + f.coveredStatements, 0);
-    const conditionals = group.reduce((s, f) => s + f.conditionals, 0);
-    const coveredConditionals = group.reduce((s, f) => s + f.coveredConditionals, 0);
-    const methods = group.reduce((s, f) => s + f.methods, 0);
-    const coveredMethods = group.reduce((s, f) => s + f.coveredMethods, 0);
-    const partialLines = [
-        ...new Set(group.flatMap((f) => f.partialLines ?? [])),
-    ].sort((a, b) => a - b);
-    const missingLines = mergedLines
-        .filter((l) => l.count === 0)
-        .map((l) => l.lineNumber);
-    const lineRate = statements > 0
-        ? Number.parseFloat(((coveredStatements / statements) * 100).toFixed(2))
-        : 0;
-    const branchRate = conditionals > 0
-        ? Number.parseFloat(((coveredConditionals / conditionals) * 100).toFixed(2))
-        : 0;
-    return {
-        name: group[0].name,
-        path: group[0].path,
+    let statements = 0;
+    let coveredStatements = 0;
+    let conditionals = 0;
+    let coveredConditionals = 0;
+    let methods = 0;
+    let coveredMethods = 0;
+    for (const f of group) {
+        statements += f.statements;
+        coveredStatements += f.coveredStatements;
+        conditionals += f.conditionals;
+        coveredConditionals += f.coveredConditionals;
+        methods += f.methods;
+        coveredMethods += f.coveredMethods;
+    }
+    return finalizeMergedFile(group, lineMap, {
         statements,
         coveredStatements,
         conditionals,
         coveredConditionals,
         methods,
         coveredMethods,
-        lineRate,
-        branchRate,
-        lines: mergedLines,
-        missingLines,
-        partialLines,
-    };
+    });
 }
 function mergeFileGroup(group) {
     const lineMap = new Map();
@@ -45726,7 +45714,6 @@ function mergeFileGroup(group) {
             }
         }
     }
-    const mergedLines = [...lineMap.values()].sort((a, b) => a.lineNumber - b.lineNumber);
     // Parsers differ on how statements map to lines: cobertura/lcov/jacoco/
     // istanbul emit one "statement" per line entry, but Go counts semantic
     // blocks where one block can span many lines. To stay correct for both,
@@ -45737,11 +45724,8 @@ function mergeFileGroup(group) {
     const statements = Math.max(...group.map((f) => f.statements));
     const lineAligned = group.every((f) => f.statements === f.lines.length);
     const coveredStatements = lineAligned
-        ? mergedLines.filter((l) => l.count > 0).length
+        ? [...lineMap.values()].filter((l) => l.count > 0).length
         : Math.max(...group.map((f) => f.coveredStatements));
-    const missingLines = mergedLines
-        .filter((l) => l.count === 0)
-        .map((l) => l.lineNumber);
     // LineCoverage doesn't carry per-branch hit state, so we can't reliably
     // union branch hits across reports. Same file ⇒ same branch count across
     // reports, so take the max as a best-effort union.
@@ -45749,40 +45733,49 @@ function mergeFileGroup(group) {
     const coveredConditionals = Math.max(...group.map((f) => f.coveredConditionals));
     const methods = Math.max(...group.map((f) => f.methods));
     const coveredMethods = Math.max(...group.map((f) => f.coveredMethods));
-    // A partial line remains partial only if it still has hits after merge;
-    // lines that ended up fully missed are no longer partial.
-    const partialSet = new Set();
-    for (const file of group) {
-        for (const ln of file.partialLines ?? [])
-            partialSet.add(ln);
-    }
-    const partialLines = [...partialSet]
-        .filter((ln) => {
-        const l = lineMap.get(ln);
-        return l !== undefined && l.count > 0;
-    })
-        .sort((a, b) => a - b);
-    const lineRate = statements > 0
-        ? Number.parseFloat(((coveredStatements / statements) * 100).toFixed(2))
-        : 0;
-    const branchRate = conditionals > 0
-        ? Number.parseFloat(((coveredConditionals / conditionals) * 100).toFixed(2))
-        : 0;
-    return {
-        name: group[0].name,
-        path: group[0].path,
+    return finalizeMergedFile(group, lineMap, {
         statements,
         coveredStatements,
         conditionals,
         coveredConditionals,
         methods,
         coveredMethods,
-        lineRate,
-        branchRate,
+    });
+}
+/**
+ * Assemble the final FileCoverage from a pre-populated lineMap and the
+ * aggregation strategy's numeric metrics. Shared by `sumFileGroup` and
+ * `mergeFileGroup` — they differ in how the map and metrics are built,
+ * but the downstream derivation (sort, missing/partial lines, rates,
+ * output shape) is identical.
+ */
+function finalizeMergedFile(group, lineMap, metrics) {
+    const mergedLines = [...lineMap.values()].sort((a, b) => a.lineNumber - b.lineNumber);
+    const missingLines = mergedLines
+        .filter((l) => l.count === 0)
+        .map((l) => l.lineNumber);
+    // A partial line remains partial only if it still has hits after merge;
+    // lines that ended up fully missed are no longer partial.
+    const partialLines = [
+        ...new Set(group.flatMap((f) => f.partialLines ?? [])),
+    ]
+        .filter((ln) => (lineMap.get(ln)?.count ?? 0) > 0)
+        .sort((a, b) => a - b);
+    return {
+        name: group[0].name,
+        path: group[0].path,
+        ...metrics,
+        lineRate: calculateRate(metrics.coveredStatements, metrics.statements),
+        branchRate: calculateRate(metrics.coveredConditionals, metrics.conditionals),
         lines: mergedLines,
         missingLines,
         partialLines,
     };
+}
+function calculateRate(covered, total) {
+    return total > 0
+        ? Number.parseFloat(((covered / total) * 100).toFixed(2))
+        : 0;
 }
 
 var github$1 = {};
