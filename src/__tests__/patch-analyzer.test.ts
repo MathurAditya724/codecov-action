@@ -341,4 +341,51 @@ index 0000000..e69de29
     expect(result.fileBreakdown).toHaveLength(1);
     expect(result.fileBreakdown[0].partialLines).toEqual([]);
   });
+
+  it("should not count zero-hit comment lines (JSDoc, //, #) as missed", () => {
+    // Simulates bun emitting DA:x,0 for JSDoc and comment lines in CI
+    // due to source-map artifacts from TypeScript compilation.
+    const diffWithComments = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,7 @@
++ * JSDoc continuation line
++// single-line comment
++# shell-style comment
++/**
++ */
++  return 42;
++
+`;
+
+    const coverageWithCommentZeros: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // * JSDoc — zero-hit DA artifact
+            { lineNumber: 12, count: 0 }, // // comment — zero-hit DA artifact
+            { lineNumber: 13, count: 0 }, // # comment — zero-hit DA artifact
+            { lineNumber: 14, count: 0 }, // /** opener — zero-hit DA artifact
+            { lineNumber: 15, count: 0 }, // */ closer — zero-hit DA artifact
+            { lineNumber: 16, count: 5 }, // return 42 — actually executed
+            // line 17 is blank, no DA entry
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithComments,
+      coverageWithCommentZeros,
+    );
+
+    // Comment lines with DA:x,0 must not count as missed
+    expect(result.missedLines).toBe(0);
+    // The one real code line with hits must count as covered
+    expect(result.coveredLines).toBe(1);
+    expect(result.percentage).toBe(100);
+  });
 });

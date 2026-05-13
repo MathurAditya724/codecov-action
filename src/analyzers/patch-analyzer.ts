@@ -24,6 +24,28 @@ export interface PatchFileCoverage {
 }
 
 /**
+ * Returns true when a diff line's content is purely a comment or blank —
+ * these lines are never executable regardless of what the LCOV says.
+ *
+ * Coverage tools (e.g. bun under --isolate) sometimes emit DA:x,0 entries
+ * for JSDoc continuation lines and other comment lines due to source-map
+ * artifacts. Counting those as "missed" is a false positive.
+ *
+ * @param diffLine - raw diff line content including the leading "+" character
+ */
+function isCommentOrBlankLine(diffLine: string): boolean {
+  // Strip the leading "+" diff marker and any indentation
+  const content = diffLine.slice(1).trimStart();
+  return (
+    content === "" ||
+    content.startsWith("//") || // single-line JS/TS/Java comment
+    content.startsWith("/*") || // block/JSDoc comment opener: /*, /**
+    content.startsWith("*") || // block/JSDoc continuation or closer: * text, */
+    content.startsWith("#") // shell / Python comment
+  );
+}
+
+/**
  * Normalize a file path by stripping leading "./" and normalizing slashes.
  */
 function normalizePath(filePath: string): string {
@@ -155,6 +177,9 @@ export const PatchAnalyzer = {
             // If line exists in coverage data (meaning it's executable code, not comment/whitespace)
             if (lineCoverage) {
               if (lineCoverage.count === 0) {
+                // Skip comment/blank lines — zero-hit DA entries for these are
+                // source-map artifacts from tools like bun, not real coverage gaps.
+                if (isCommentOrBlankLine(change.content)) continue;
                 missedLines.push(lineNumber);
                 totalMissed++;
               } else {
