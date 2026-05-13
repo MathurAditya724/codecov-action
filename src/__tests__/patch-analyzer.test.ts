@@ -388,4 +388,39 @@ index 83db48f..bf269f4 100644
     expect(result.coveredLines).toBe(1);
     expect(result.percentage).toBe(100);
   });
+
+  it("should count JS/TS private class members (#field) as executable, not comments", () => {
+    // Private class fields start with # but are NOT comments.
+    // A DA:x,0 entry for #privateField must count as missed coverage.
+    const diffWithPrivateField = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,2 @@
++  #count = 0;
++  #_backing = null;
+`;
+
+    const coverageWithPrivateZero: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // #count — unexecuted private field
+            { lineNumber: 12, count: 0 }, // #_backing — unexecuted private field
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithPrivateField,
+      coverageWithPrivateZero,
+    );
+
+    // Private fields are executable — zero-hit DA entries must count as missed
+    expect(result.missedLines).toBe(2);
+    expect(result.coveredLines).toBe(0);
+  });
 });

@@ -29835,7 +29835,7 @@ function isCommentOrBlankLine(diffLine) {
         content.startsWith("//") || // single-line JS/TS/Java comment
         content.startsWith("/*") || // block/JSDoc comment opener: /*, /**
         content.startsWith("*") || // block/JSDoc continuation or closer: * text, */
-        content.startsWith("#") // shell / Python comment
+        /^#(?!\w)/u.test(content) // shell/Python comment; excludes JS/TS private fields (#field)
     );
 }
 /**
