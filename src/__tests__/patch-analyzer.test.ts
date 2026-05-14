@@ -423,4 +423,43 @@ index 83db48f..bf269f4 100644
     expect(result.missedLines).toBe(2);
     expect(result.coveredLines).toBe(0);
   });
+
+  it("should count JS/TS generator methods (*name, *[Symbol]) as executable, not comments", () => {
+    // Bun emits DA:x,0 for generator method declaration lines when the method
+    // is never called. startsWith("*") would silently skip these, hiding a real
+    // coverage gap. Confirmed by actual bun LCOV output: *range(n) { → DA:4,0.
+    const diffWithGenerator = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,4 @@
++  *range(n: number) {
++    for (let i = 0; i < n; i++) { yield i; }
++  }
++  *[Symbol.iterator]() { yield 0; }
+`;
+
+    const coverageWithGeneratorZero: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // *range — bun DA:x,0 for uncalled generator
+            { lineNumber: 12, count: 0 }, // for loop body — uncalled
+            { lineNumber: 14, count: 0 }, // *[Symbol.iterator] — uncalled
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithGenerator,
+      coverageWithGeneratorZero,
+    );
+
+    // Generator methods are executable — zero-hit DA entries must count as missed
+    expect(result.missedLines).toBe(3);
+    expect(result.coveredLines).toBe(0);
+  });
 });
