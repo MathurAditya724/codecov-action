@@ -40,7 +40,7 @@ function isCommentOrBlankLine(diffLine: string): boolean {
     content === "" ||
     content.startsWith("//") || // single-line JS/TS/Java comment
     content.startsWith("/*") || // block/JSDoc comment opener: /*, /**
-    /^\*(?![a-zA-Z_$\[(])/u.test(content) || // JSDoc continuation/closer (* text, */); excludes generators (*myGen, *[Symbol], *(expr))
+    /^\*(?![a-zA-Z_$\[(*])/u.test(content) || // JSDoc continuation/closer (* text, */); excludes generators (*myGen, *[Symbol], *(expr)) and double-star (**ptr, **kwargs)
     /^#(?!\w)/u.test(content) // shell/Python comment; excludes JS/TS private fields (#field)
   );
 }
