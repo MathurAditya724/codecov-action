@@ -432,11 +432,12 @@ index 83db48f..bf269f4 100644
 index 83db48f..bf269f4 100644
 --- a/src/utils.ts
 +++ b/src/utils.ts
-@@ -10,0 +11,4 @@
+@@ -10,0 +11,5 @@
 +  *range(n: number) {
 +    for (let i = 0; i < n; i++) { yield i; }
 +  }
 +  *[Symbol.iterator]() { yield 0; }
++  *(computed)() { return 1; }
 `;
 
     const coverageWithGeneratorZero: AggregatedCoverageResults = {
@@ -448,6 +449,7 @@ index 83db48f..bf269f4 100644
             { lineNumber: 11, count: 0 }, // *range — bun DA:x,0 for uncalled generator
             { lineNumber: 12, count: 0 }, // for loop body — uncalled
             { lineNumber: 14, count: 0 }, // *[Symbol.iterator] — uncalled
+            { lineNumber: 15, count: 0 }, // *(computed) — parenthesised computed generator
           ],
         },
       ],
@@ -459,7 +461,7 @@ index 83db48f..bf269f4 100644
     );
 
     // Generator methods are executable — zero-hit DA entries must count as missed
-    expect(result.missedLines).toBe(3);
+    expect(result.missedLines).toBe(4);
     expect(result.coveredLines).toBe(0);
   });
 });
