@@ -151,6 +151,21 @@ describe("ReportFormatter", () => {
     expect(withIdentifier).toContain("Test comment");
   });
 
+  it("should return default marker when no comment key is provided", () => {
+    expect(ReportFormatter.getCommentIdentifier()).toBe(
+      "<!-- codecov-action-results -->",
+    );
+  });
+
+  it("should return namespaced marker when comment key is provided", () => {
+    expect(ReportFormatter.getCommentIdentifier("frontend")).toBe(
+      "<!-- codecov-action-results:frontend -->",
+    );
+    expect(ReportFormatter.getCommentIdentifier("backend")).toBe(
+      "<!-- codecov-action-results:backend -->",
+    );
+  });
+
   it("should handle tests with no stack trace", () => {
     const results: AggregatedTestResults = {
       totalTests: 1,

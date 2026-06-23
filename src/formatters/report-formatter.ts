@@ -683,8 +683,10 @@ export class ReportFormatter {
    * Generate a unique identifier for the comment
    * This helps identify comments created by this action
    */
-  static getCommentIdentifier(): string {
-    return "<!-- codecov-action-results -->";
+  static getCommentIdentifier(key?: string): string {
+    return key
+      ? `<!-- codecov-action-results:${key} -->`
+      : "<!-- codecov-action-results -->";
   }
 
   /**

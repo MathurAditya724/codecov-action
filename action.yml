@@ -76,6 +76,10 @@ inputs:
     description: Post results as a PR comment (in addition to Job Summary)
     required: false
     default: "false"
+  comment-key:
+    description: Unique key to namespace this step's PR comment. Set a different key per step to post separate comments.
+    required: false
+    default: ""
 
   # Threshold enforcement
   fail-on-error:
