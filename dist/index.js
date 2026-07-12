@@ -33485,8 +33485,10 @@ class ReportFormatter {
      * Generate a unique identifier for the comment
      * This helps identify comments created by this action
      */
-    static getCommentIdentifier() {
-        return "<!-- codecov-action-results -->";
+    static getCommentIdentifier(key) {
+        return key
+            ? `<!-- codecov-action-results:${key} -->`
+            : "<!-- codecov-action-results -->";
     }
     /**
      * Legacy identifier for backward compatibility
@@ -49617,7 +49619,7 @@ class GitHubClient {
     /**
      * Post or update a comment on the pull request
      */
-    async postOrUpdateComment(commentBody) {
+    async postOrUpdateComment(commentBody, commentKey) {
         if (!this.isPullRequest()) {
             coreExports.info("Not a pull request context, skipping comment");
             return;
@@ -49628,7 +49630,7 @@ class GitHubClient {
             return;
         }
         const { owner, repo } = this.context.repo;
-        const identifier = ReportFormatter.getCommentIdentifier();
+        const identifier = ReportFormatter.getCommentIdentifier(commentKey);
         try {
             // Find existing comment
             const { data: comments } = await this.octokit.rest.issues.listComments({
@@ -49639,7 +49641,7 @@ class GitHubClient {
             // Check for both new and legacy identifiers for backward compatibility
             const legacyIdentifier = ReportFormatter.getLegacyCommentIdentifier();
             const existingComment = comments.find((comment) => comment.body?.includes(identifier) ||
-                comment.body?.includes(legacyIdentifier));
+                (!commentKey && comment.body?.includes(legacyIdentifier)));
             const fullCommentBody = `${identifier}\n${commentBody}`;
             if (existingComment) {
                 // Update existing comment (will upgrade legacy comments to new format)
@@ -232696,6 +232698,7 @@ async function run() {
         const enableTests = coreExports.getBooleanInput("enable-tests") !== false;
         const enableCoverage = coreExports.getBooleanInput("enable-coverage") !== false;
         const postPrComment = coreExports.getBooleanInput("post-pr-comment") === true;
+        const commentKey = coreExports.getInput("comment-key") || undefined;
         // Get coverage config
         const coverageConfig = await getCoverageConfig();
         if (!token) {
@@ -232865,7 +232868,7 @@ async function run() {
         if (shouldPostPrComment && githubClient.isPullRequest()) {
             const prCommentBody = formatter.formatReport(aggregatedTestResults || undefined, aggregatedCoverageResults || undefined, reportOptions);
             coreExports.info("📝 Posting results to PR comment...");
-            await githubClient.postOrUpdateComment(prCommentBody);
+            await githubClient.postOrUpdateComment(prCommentBody, commentKey);
         }
         coreExports.info("✅ Codecov Action completed successfully!");
         // Fail if thresholds met and fail-on-error is true

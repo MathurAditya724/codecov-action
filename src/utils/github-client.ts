@@ -34,7 +34,10 @@ export class GitHubClient {
   /**
    * Post or update a comment on the pull request
    */
-  async postOrUpdateComment(commentBody: string): Promise<void> {
+  async postOrUpdateComment(
+    commentBody: string,
+    commentKey?: string,
+  ): Promise<void> {
     if (!this.isPullRequest()) {
       core.info("Not a pull request context, skipping comment");
       return;
@@ -47,7 +50,7 @@ export class GitHubClient {
     }
 
     const { owner, repo } = this.context.repo;
-    const identifier = ReportFormatter.getCommentIdentifier();
+    const identifier = ReportFormatter.getCommentIdentifier(commentKey);
 
     try {
       // Find existing comment
@@ -62,7 +65,7 @@ export class GitHubClient {
       const existingComment = comments.find(
         (comment) =>
           comment.body?.includes(identifier) ||
-          comment.body?.includes(legacyIdentifier)
+          (!commentKey && comment.body?.includes(legacyIdentifier)),
       );
 
       const fullCommentBody = `${identifier}\n${commentBody}`;
@@ -90,9 +93,7 @@ export class GitHubClient {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      core.warning(
-        `Failed to post/update PR comment: ${message}`
-      );
+      core.warning(`Failed to post/update PR comment: ${message}`);
       // Don't throw - comment posting failure shouldn't fail the action
       // This commonly happens on fork PRs where GITHUB_TOKEN has limited permissions
     }
@@ -110,7 +111,7 @@ export class GitHubClient {
       core.warning(
         `Failed to detect default branch, falling back to 'main': ${
           error instanceof Error ? error.message : String(error)
-        }`
+        }`,
       );
       return "main";
     }
@@ -140,7 +141,7 @@ export class GitHubClient {
     context: string,
     state: "success" | "failure" | "pending",
     description: string,
-    targetUrl?: string
+    targetUrl?: string,
   ): Promise<void> {
     const { owner, repo } = this.context.repo;
     const sha = this.context.sha;

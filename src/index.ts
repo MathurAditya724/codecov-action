@@ -182,6 +182,7 @@ async function run() {
     const enableTests = core.getBooleanInput("enable-tests") !== false;
     const enableCoverage = core.getBooleanInput("enable-coverage") !== false;
     const postPrComment = core.getBooleanInput("post-pr-comment") === true;
+    const commentKey = core.getInput("comment-key") || undefined;
 
     // Get coverage config
     const coverageConfig = await getCoverageConfig();
@@ -444,7 +445,7 @@ async function run() {
         reportOptions,
       );
       core.info("📝 Posting results to PR comment...");
-      await githubClient.postOrUpdateComment(prCommentBody);
+      await githubClient.postOrUpdateComment(prCommentBody, commentKey);
     }
 
     core.info("✅ Codecov Action completed successfully!");
