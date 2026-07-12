@@ -103,6 +103,32 @@ Error: Expected 5 to equal 6
 
       expect(() => parser.parseXML(xml)).toThrow();
     });
+
+    it("should parse large reports with many entity references", () => {
+      // Regression for #87: fast-xml-parser >=5.3.6 counts standard entities
+      // (&lt; &gt; &amp;) toward maxTotalExpansions, which defaults to 1000 in
+      // the boolean processEntities form. Vitest failure bodies carry escaped
+      // diffs, so a large report easily exceeds the limit and fails to parse.
+      const caseCount = 300;
+      const cases = Array.from(
+        { length: caseCount },
+        (_, i) =>
+          `<testcase classname="c" name="t${i}" time="0.1"><failure message="err">expected &lt;a&gt; &amp; &lt;b&gt; got &lt;c&gt;</failure></testcase>`,
+      ).join("\n");
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="big" tests="${caseCount}" failures="${caseCount}" errors="0" time="1">
+  <testsuite name="Big Suite" tests="${caseCount}" failures="${caseCount}" errors="0" skipped="0" time="1">
+    ${cases}
+  </testsuite>
+</testsuites>`;
+
+      const result = parser.parseXML(xml);
+
+      expect(result.testsuites[0].testcases).toHaveLength(caseCount);
+      expect(result.testsuites[0].testcases[0].failure?.content).toContain(
+        "expected <a> & <b> got <c>",
+      );
+    });
   });
 
   describe("aggregateResults", () => {
