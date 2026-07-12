@@ -52,6 +52,7 @@ jobs:
 | `enable-tests` | Enable test results reporting | No | `true` |
 | `enable-coverage` | Enable coverage reporting | No | `true` |
 | `post-pr-comment` | Post results as a PR comment | No | `false` |
+| `comment-key` | Namespace the PR comment per step so steps sharing this action post separate comments instead of overwriting each other | No | — |
 
 ### Coverage File Discovery (Codecov-style)
 
