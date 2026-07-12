@@ -29935,8 +29935,10 @@ const PatchAnalyzer = {
                             if (lineCoverage.count === 0) {
                                 // Skip comment/blank lines — zero-hit DA entries for these are
                                 // source-map artifacts from tools like bun, not real coverage gaps.
-                                if (isCommentOrBlankLine(change.content))
+                                if (isCommentOrBlankLine(change.content)) {
+                                    coreExports.debug(`  Skipping ${diffFile.to}:${lineNumber} — DA count is 0 but line is comment/blank: ${change.content.trim()}`);
                                     continue;
+                                }
                                 missedLines.push(lineNumber);
                                 totalMissed++;
                             }
