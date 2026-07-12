@@ -1,3 +1,34 @@
+## 0.3.8
+
+### New Features ✨
+
+- (comment) Add comment-key input for per-step PR comment namespacing by @null0rUndefined in [#88](https://github.com/getsentry/codecov-action/pull/88)
+
+### Bug Fixes 🐛
+
+- Bump fast-xml-parser to ^5.5.10 to fix entity expansion limit on large JUnit XML by @mydea in [#77](https://github.com/getsentry/codecov-action/pull/77)
+- Add `coverage.cobertura.xml` to default discovery patterns by @jpnurmi in [#76](https://github.com/getsentry/codecov-action/pull/76)
+
+### Documentation 📚
+
+- Document comment-key input in README by @MathurAditya724 in [#91](https://github.com/getsentry/codecov-action/pull/91)
+
+### Internal Changes 🔧
+
+#### Deps Dev
+
+- Bump vite from 7.2.6 to 7.3.5 by @dependabot in [#86](https://github.com/getsentry/codecov-action/pull/86)
+- Bump vitest from 4.0.15 to 4.1.0 by @dependabot in [#84](https://github.com/getsentry/codecov-action/pull/84)
+
+#### Other
+
+- (deps) Bump fast-xml-parser and js-yaml, rebuild bundle by @MathurAditya724 in [#92](https://github.com/getsentry/codecov-action/pull/92)
+- (junit) Guard entity expansion limit on large reports by @MathurAditya724 in [#90](https://github.com/getsentry/codecov-action/pull/90)
+
+### Other
+
+- license: add Apache-2.0 license by @sentry-junior in [#81](https://github.com/getsentry/codecov-action/pull/81)
+
 ## 0.3.7
 
 ### Bug Fixes 🐛
