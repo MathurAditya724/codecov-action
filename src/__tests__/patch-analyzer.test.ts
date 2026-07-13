@@ -341,4 +341,127 @@ index 0000000..e69de29
     expect(result.fileBreakdown).toHaveLength(1);
     expect(result.fileBreakdown[0].partialLines).toEqual([]);
   });
+
+  it("should not count zero-hit comment lines (JSDoc, //, #) as missed", () => {
+    // Simulates bun emitting DA:x,0 for JSDoc and comment lines in CI
+    // due to source-map artifacts from TypeScript compilation.
+    const diffWithComments = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,7 @@
++ * JSDoc continuation line
++// single-line comment
++# shell-style comment
++/**
++ */
++  return 42;
++
+`;
+
+    const coverageWithCommentZeros: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // * JSDoc — zero-hit DA artifact
+            { lineNumber: 12, count: 0 }, // // comment — zero-hit DA artifact
+            { lineNumber: 13, count: 0 }, // # comment — zero-hit DA artifact
+            { lineNumber: 14, count: 0 }, // /** opener — zero-hit DA artifact
+            { lineNumber: 15, count: 0 }, // */ closer — zero-hit DA artifact
+            { lineNumber: 16, count: 5 }, // return 42 — actually executed
+            // line 17 is blank, no DA entry
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithComments,
+      coverageWithCommentZeros,
+    );
+
+    // Comment lines with DA:x,0 must not count as missed
+    expect(result.missedLines).toBe(0);
+    // The one real code line with hits must count as covered
+    expect(result.coveredLines).toBe(1);
+    expect(result.percentage).toBe(100);
+  });
+
+  it("should count JS/TS private class members (#field) as executable, not comments", () => {
+    // Private class fields start with # but are NOT comments.
+    // A DA:x,0 entry for #privateField must count as missed coverage.
+    const diffWithPrivateField = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,2 @@
++  #count = 0;
++  #_backing = null;
+`;
+
+    const coverageWithPrivateZero: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // #count — unexecuted private field
+            { lineNumber: 12, count: 0 }, // #_backing — unexecuted private field
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithPrivateField,
+      coverageWithPrivateZero,
+    );
+
+    // Private fields are executable — zero-hit DA entries must count as missed
+    expect(result.missedLines).toBe(2);
+    expect(result.coveredLines).toBe(0);
+  });
+
+  it("should count JS/TS generator methods (*name, *[Symbol]) as executable, not comments", () => {
+    // Bun emits DA:x,0 for generator method declaration lines when the method
+    // is never called. startsWith("*") would silently skip these, hiding a real
+    // coverage gap. Confirmed by actual bun LCOV output: *range(n) { → DA:4,0.
+    const diffWithGenerator = `diff --git a/src/utils.ts b/src/utils.ts
+index 83db48f..bf269f4 100644
+--- a/src/utils.ts
++++ b/src/utils.ts
+@@ -10,0 +11,5 @@
++  *range(n: number) {
++    for (let i = 0; i < n; i++) { yield i; }
++  }
++  *[Symbol.iterator]() { yield 0; }
++  *(computed)() { return 1; }
+`;
+
+    const coverageWithGeneratorZero: AggregatedCoverageResults = {
+      ...mockCoverage,
+      files: [
+        {
+          ...mockCoverage.files[0],
+          lines: [
+            { lineNumber: 11, count: 0 }, // *range — bun DA:x,0 for uncalled generator
+            { lineNumber: 12, count: 0 }, // for loop body — uncalled
+            { lineNumber: 14, count: 0 }, // *[Symbol.iterator] — uncalled
+            { lineNumber: 15, count: 0 }, // *(computed) — parenthesised computed generator
+          ],
+        },
+      ],
+    };
+
+    const result = PatchAnalyzer.analyzePatchCoverage(
+      diffWithGenerator,
+      coverageWithGeneratorZero,
+    );
+
+    // Generator methods are executable — zero-hit DA entries must count as missed
+    expect(result.missedLines).toBe(4);
+    expect(result.coveredLines).toBe(0);
+  });
 });

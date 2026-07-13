@@ -29819,6 +29819,26 @@ var parseDiffExports = requireParseDiff();
 var parseDiff = /*@__PURE__*/getDefaultExportFromCjs$1(parseDiffExports);
 
 /**
+ * Returns true when a diff line's content is purely a comment or blank —
+ * these lines are never executable regardless of what the LCOV says.
+ *
+ * Coverage tools (e.g. bun under --isolate) sometimes emit DA:x,0 entries
+ * for JSDoc continuation lines and other comment lines due to source-map
+ * artifacts. Counting those as "missed" is a false positive.
+ *
+ * @param diffLine - raw diff line content including the leading "+" character
+ */
+function isCommentOrBlankLine(diffLine) {
+    // Strip the leading "+" diff marker and any indentation
+    const content = diffLine.slice(1).trimStart();
+    return (content === "" ||
+        content.startsWith("//") || // single-line JS/TS/Java comment
+        content.startsWith("/*") || // block/JSDoc comment opener: /*, /**
+        /^\*(?![a-zA-Z_$\[(*])/u.test(content) || // JSDoc continuation/closer (* text, */); excludes generators (*myGen, *[Symbol], *(expr)) and double-star (**ptr, **kwargs)
+        /^#(?!\w)/u.test(content) // shell/Python comment; excludes JS/TS private fields (#field)
+    );
+}
+/**
  * Normalize a file path by stripping leading "./" and normalizing slashes.
  */
 function normalizePath$1(filePath) {
@@ -29913,6 +29933,12 @@ const PatchAnalyzer = {
                         // If line exists in coverage data (meaning it's executable code, not comment/whitespace)
                         if (lineCoverage) {
                             if (lineCoverage.count === 0) {
+                                // Skip comment/blank lines — zero-hit DA entries for these are
+                                // source-map artifacts from tools like bun, not real coverage gaps.
+                                if (isCommentOrBlankLine(change.content)) {
+                                    coreExports.debug(`  Skipping ${diffFile.to}:${lineNumber} — DA count is 0 but line is comment/blank: ${change.content.trim()}`);
+                                    continue;
+                                }
                                 missedLines.push(lineNumber);
                                 totalMissed++;
                             }
