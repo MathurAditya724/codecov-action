@@ -33,7 +33,7 @@ export function Layout() {
         <div className="mx-auto max-w-7xl px-6">
           This dashboard works with repositories using the{" "}
           <a
-            href="https://github.com/getsentry/codecov-action"
+            href="https://github.com/getsentry/coverage-action"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"

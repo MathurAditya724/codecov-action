@@ -25,6 +25,9 @@ describe("ReportFormatter", () => {
     expect(comment).toContain("**Pass Rate: 100%**");
     expect(comment).toContain("All tests are passing successfully.");
     expect(comment).toContain("5.50s");
+    expect(comment).toContain(
+      "[Codecov Action](https://github.com/getsentry/coverage-action)",
+    );
   });
 
   it("should format results with failed tests", () => {

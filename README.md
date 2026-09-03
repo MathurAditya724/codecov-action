@@ -1,6 +1,6 @@
 # Codecov Action
 
-![build](https://github.com/getsentry/codecov-action/actions/workflows/build.yml/badge.svg)
+![build](https://github.com/getsentry/coverage-action/actions/workflows/build.yml/badge.svg)
 
 Self-hosted coverage and test reporting with GitHub Actions. Uses GitHub Artifacts for storage — no external service or Codecov token required.
 
@@ -24,7 +24,7 @@ jobs:
         run: npm test -- --coverage
       
       - name: Codecov Action
-        uses: getsentry/codecov-action@v1
+        uses: getsentry/coverage-action@0.3.8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -128,7 +128,7 @@ When thresholds are not configured, status checks report coverage metrics withou
 
 ```yaml
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -137,7 +137,7 @@ When thresholds are not configured, status checks report coverage metrics withou
 
 ```yaml
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     files: ./coverage/lcov.info,./backend/coverage.xml
@@ -154,7 +154,7 @@ When thresholds are not configured, status checks report coverage metrics withou
   run: pytest --cov=src --cov-report=xml
 
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     directory: ./
@@ -169,7 +169,7 @@ When thresholds are not configured, status checks report coverage metrics withou
   run: ./gradlew test jacocoTestReport
 
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     files: ./build/reports/jacoco/test/jacocoTestReport.xml
@@ -183,7 +183,7 @@ When thresholds are not configured, status checks report coverage metrics withou
   run: go test -coverprofile=coverage.out ./...
 
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     files: ./coverage.out
@@ -200,7 +200,7 @@ When thresholds are not configured, status checks report coverage metrics withou
   run: cargo llvm-cov --codecov --output-path codecov.json
 
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     files: ./codecov.json
@@ -214,7 +214,7 @@ When thresholds are not configured, status checks report coverage metrics withou
   run: npm test -- --coverage --coverageReporters=lcov
 
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     directory: ./coverage
@@ -225,7 +225,7 @@ When thresholds are not configured, status checks report coverage metrics withou
 
 ```yaml
 - name: Frontend Coverage
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     directory: ./frontend/coverage
@@ -233,7 +233,7 @@ When thresholds are not configured, status checks report coverage metrics withou
     name: frontend-coverage
 
 - name: Backend Coverage
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     directory: ./backend/coverage
@@ -263,7 +263,7 @@ jobs:
         run: pytest --cov=src --cov-report=xml
 
       - name: Codecov Action
-        uses: getsentry/codecov-action@v1
+        uses: getsentry/coverage-action@0.3.8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: coverage.xml
@@ -276,7 +276,7 @@ Use built-in threshold enforcement with GitHub status checks:
 
 ```yaml
 - name: Codecov Action
-  uses: getsentry/codecov-action@v1
+  uses: getsentry/coverage-action@0.3.8
   with:
     token: ${{ secrets.GITHUB_TOKEN }}
     target-project: auto          # Use base branch coverage as target
