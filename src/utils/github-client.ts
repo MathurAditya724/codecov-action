@@ -32,6 +32,21 @@ export class GitHubClient {
   }
 
   /**
+   * Get the base and head commit SHAs from the pull request context.
+   */
+  getPullRequestCommitRefs(): {
+    baseCommit?: string;
+    headCommit?: string;
+  } {
+    const pullRequest = this.context.payload.pull_request;
+
+    return {
+      baseCommit: pullRequest?.base.sha,
+      headCommit: pullRequest?.head.sha,
+    };
+  }
+
+  /**
    * Post or update a comment on the pull request
    */
   async postOrUpdateComment(

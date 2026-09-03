@@ -51964,6 +51964,16 @@ class GitHubClient {
         return null;
     }
     /**
+     * Get the base and head commit SHAs from the pull request context.
+     */
+    getPullRequestCommitRefs() {
+        const pullRequest = this.context.payload.pull_request;
+        return {
+            baseCommit: pullRequest?.base.sha,
+            headCommit: pullRequest?.head.sha,
+        };
+    }
+    /**
      * Post or update a comment on the pull request
      */
     async postOrUpdateComment(commentBody, commentKey) {
@@ -235241,7 +235251,7 @@ async function run() {
         let coverageChecksFailed = false;
         const patchTargetForFormatter = coverageConfig.targetPatch ?? coverageConfig.status?.patch.target ?? 80;
         if (enableCoverage) {
-            aggregatedCoverageResults = await processCoverage(coverageConfig, artifactManager, currentBranch, baseBranch);
+            aggregatedCoverageResults = await processCoverage(coverageConfig, artifactManager, currentBranch, baseBranch, githubClient.getPullRequestCommitRefs());
             // Run threshold checks if coverage results are available
             if (aggregatedCoverageResults) {
                 // Initialize status reporter
@@ -235529,7 +235539,7 @@ async function findCoverageFiles(config) {
 /**
  * Process coverage results with multi-format support
  */
-async function processCoverage(config, artifactManager, currentBranch, baseBranch) {
+async function processCoverage(config, artifactManager, currentBranch, baseBranch, pullRequestCommitRefs) {
     const { format, failCiIfError, handleNoReportsFound, verbose, flags, name } = config;
     coreExports.info("🎯 Processing coverage results...");
     if (name) {
@@ -235646,7 +235656,10 @@ async function processCoverage(config, artifactManager, currentBranch, baseBranc
     const baseCoverage = await artifactManager.downloadBaseCoverageResults(baseBranch, flags.length > 0 ? flags : undefined, name || undefined);
     if (baseCoverage) {
         coreExports.info("🔍 Comparing with base branch coverage...");
-        const comparison = CoverageComparator.compareResults(baseCoverage, aggregatedResults);
+        const comparison = CoverageComparator.compareResults(baseCoverage, aggregatedResults, {
+            baseBranch,
+            ...pullRequestCommitRefs,
+        });
         aggregatedResults.comparison = comparison;
         // Log comparison summary
         coreExports.info("📈 Coverage Comparison Summary:");

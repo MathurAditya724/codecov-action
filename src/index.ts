@@ -253,6 +253,7 @@ async function run() {
         artifactManager,
         currentBranch,
         baseBranch,
+        githubClient.getPullRequestCommitRefs(),
       );
 
       // Run threshold checks if coverage results are available
@@ -669,6 +670,10 @@ async function processCoverage(
   artifactManager: ArtifactManager,
   currentBranch: string,
   baseBranch: string,
+  pullRequestCommitRefs: {
+    baseCommit?: string;
+    headCommit?: string;
+  },
 ) {
   const { format, failCiIfError, handleNoReportsFound, verbose, flags, name } =
     config;
@@ -828,6 +833,10 @@ async function processCoverage(
     const comparison = CoverageComparator.compareResults(
       baseCoverage,
       aggregatedResults,
+      {
+        baseBranch,
+        ...pullRequestCommitRefs,
+      },
     );
     aggregatedResults.comparison = comparison;
 
