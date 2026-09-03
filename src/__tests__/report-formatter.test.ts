@@ -286,6 +286,33 @@ describe("ReportFormatter", () => {
       expect(comment).not.toContain("with **1348 lines** missing coverage");
     });
 
+    it("should show resolved pull request commit references", () => {
+      const comment = formatter.formatReport(undefined, {
+        ...coverageWithMissingFiles,
+        comparison: {
+          filesAdded: [],
+          filesRemoved: [],
+          filesChanged: [],
+          deltaLineRate: 0,
+          deltaBranchRate: 0,
+          deltaTotalStatements: 0,
+          deltaCoveredStatements: 0,
+          deltaTotalConditionals: 0,
+          deltaCoveredConditionals: 0,
+          deltaTotalMethods: 0,
+          deltaCoveredMethods: 0,
+          improvement: false,
+          baseBranch: "main",
+          baseCommit: "0123456789abcdef",
+          headCommit: "abcdef0123456789",
+        },
+      });
+
+      expect(comment).toContain(
+        "Comparing base (`0123456`) to head (`abcdef0`).",
+      );
+    });
+
     it("should show X when patch coverage is below configured target", () => {
       const coverageResults: AggregatedCoverageResults = {
         totalStatements: 1000,

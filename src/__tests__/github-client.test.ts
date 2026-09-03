@@ -15,7 +15,13 @@ vi.mock("@actions/github", () => ({
   context: {
     eventName: "pull_request",
     repo: { owner: "owner", repo: "repo" },
-    payload: { pull_request: { number: 1 } },
+    payload: {
+      pull_request: {
+        number: 1,
+        base: { sha: "0123456789abcdef" },
+        head: { sha: "abcdef0123456789" },
+      },
+    },
   },
 }));
 
@@ -69,5 +75,12 @@ describe("GitHubClient.postOrUpdateComment", () => {
       expect.objectContaining({ comment_id: 42 }),
     );
     expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it("returns the base and head commit SHAs from the pull request", () => {
+    expect(client.getPullRequestCommitRefs()).toEqual({
+      baseCommit: "0123456789abcdef",
+      headCommit: "abcdef0123456789",
+    });
   });
 });
