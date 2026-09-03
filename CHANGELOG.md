@@ -1,3 +1,20 @@
+## 0.4.0
+
+### Bug Fixes 🐛
+
+#### Action
+
+- Resolve pull request coverage refs by @MathurAditya724 in [#100](https://github.com/getsentry/coverage-action/pull/100)
+- Reference renamed coverage repository by @MathurAditya724 in [#98](https://github.com/getsentry/coverage-action/pull/98)
+
+#### Other
+
+- (patch) Skip zero-hit comment lines in patch coverage by @betegon in [#80](https://github.com/getsentry/coverage-action/pull/80)
+
+### Internal Changes 🔧
+
+- (deps) Consolidate Dependabot updates by @MathurAditya724 in [#99](https://github.com/getsentry/coverage-action/pull/99)
+
 ## 0.3.8
 
 ### New Features ✨
