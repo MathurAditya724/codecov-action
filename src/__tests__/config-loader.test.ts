@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigLoader } from "../config/config-loader.js";
 
 vi.mock("node:fs");
+vi.mock("@actions/core", () => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
+}));
 
 describe("ConfigLoader", () => {
   let loader: ConfigLoader;
@@ -317,9 +322,7 @@ config:
 `;
       vi.spyOn(fs, "existsSync").mockReturnValue(true);
       vi.spyOn(fs, "readFileSync").mockReturnValue(yaml);
-      const warningSpy = vi
-        .spyOn(core, "warning")
-        .mockImplementation(() => undefined);
+      const warningSpy = vi.mocked(core.warning);
 
       const config = await loader.loadConfig();
 
