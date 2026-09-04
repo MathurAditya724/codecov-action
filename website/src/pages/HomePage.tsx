@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { parseRepositoryReference } from "@/lib/repository-url";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -18,23 +19,9 @@ export default function HomePage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Parse repo URL or owner/repo format
-    let owner = "";
-    let repo = "";
-
-    // Try to extract from various formats
-    if (repoUrl.includes("github.com/")) {
-      const match = repoUrl.match(/github\.com\/([^/]+)\/([^/\s]+)/);
-      if (match) {
-        owner = match[1];
-        repo = match[2].replace(/\.git$/, "");
-      }
-    } else if (repoUrl.includes("/")) {
-      [owner, repo] = repoUrl.split("/").map((s) => s.trim());
-    }
-
-    if (owner && repo) {
-      navigate(`/${owner}/${repo}`);
+    const repository = parseRepositoryReference(repoUrl);
+    if (repository) {
+      navigate(`/${repository.owner}/${repository.repo}`);
     }
   };
 
